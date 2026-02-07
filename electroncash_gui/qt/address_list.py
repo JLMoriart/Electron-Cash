@@ -184,6 +184,16 @@ class AddressList(MyTreeWidget, PrintError):
             hidden_item = QTreeWidgetItem( [ _("Empty") if is_change else _("Used"), '', '', '', '', ''] )
             has_hidden = False
             addr_list = change_addresses if is_change else receiving_addresses
+            # Pre-compute is_beyond_limit for this sequence.
+            # Original is_beyond_limit(addr, is_change) calls addr_list.index(addr) = O(N) per address.
+            # Over all addresses this is O(N²). We replace it with O(1) per address:
+            #   - The "tail has history" check is identical for every address, compute once.
+            #   - The per-address check becomes: index >= limit AND NOT tail_has_history.
+            _beyond_limit_limit = getattr(self.wallet, 'gap_limit_for_change' if is_change else 'gap_limit', None)
+            if _beyond_limit_limit is not None:
+                _tail_has_history = any(addr in self.wallet._history for addr in addr_list[-_beyond_limit_limit:])
+            else:
+                _tail_has_history = True  # imported wallets: is_beyond_limit always returns False
             # Cash Account support - we do this here with the already-prepared addr_list for performance reasons
             ca_list_all = self.wallet.cashacct.get_cashaccounts(addr_list)
             ca_by_addr = defaultdict(list)
@@ -242,7 +252,7 @@ class AddressList(MyTreeWidget, PrintError):
                 if self.wallet.is_frozen(address):
                     address_item.setBackground(0, ColorScheme.BLUE.as_color(True))
                     address_item.setToolTip(0, _("Address is frozen, right-click to unfreeze"))
-                if self.wallet.is_beyond_limit(address, is_change):
+                if _beyond_limit_limit is not None and n >= _beyond_limit_limit and not _tail_has_history:
                     address_item.setBackground(0, ColorScheme.RED.as_color(True))
                 if is_change and self.wallet.is_retired_change_addr(address):
                     address_item.setForeground(0, ColorScheme.GRAY.as_color())
