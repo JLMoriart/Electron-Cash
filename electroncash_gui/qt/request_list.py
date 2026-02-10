@@ -50,6 +50,9 @@ class RequestList(MyTreeWidget):
 
     def _pre_check_skip(self):
         '''Skip the entire update() when the request count hasn't changed.'''
+        from ._perf_flags import opt_disabled
+        if opt_disabled('request_skip'):
+            return False
         if self._last_req_count is None:
             return False
         return len(self.wallet.receive_requests) == self._last_req_count

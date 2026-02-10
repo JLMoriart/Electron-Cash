@@ -42,6 +42,9 @@ class InvoiceList(MyTreeWidget):
 
     def _pre_check_skip(self):
         '''Skip the entire update() when the invoice count hasn't changed.'''
+        from ._perf_flags import opt_disabled
+        if opt_disabled('invoice_skip'):
+            return False
         if self._last_invoice_count is None:
             return False
         return len(self.parent.invoices.unpaid_invoices()) == self._last_invoice_count

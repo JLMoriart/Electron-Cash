@@ -1108,8 +1108,9 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         # triggering unnecessary Qt repaint/relayout events. Each setIcon/setText
         # call on a visible widget schedules a repaint that propagates to the
         # entire window, which is expensive with large tree widgets (18k+ items).
+        from ._perf_flags import opt_disabled as _od
         _status_key = (text, id(icon), status_tip)
-        if _status_key != getattr(self, '_last_status_key', None):
+        if _od('status_gate') or _status_key != getattr(self, '_last_status_key', None):
             self._last_status_key = _status_key
             self.tray.setToolTip("%s (%s)" % (text, self.wallet.basename()))
             self.balance_label.setText(text)
@@ -1167,7 +1168,8 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
             _elapsed = time.perf_counter() - _t0
             if _elapsed > 0.001:
                 _parts.append(f"{_name}={_elapsed:.4f}s")
-        if self._completions_need_update:
+        from ._perf_flags import opt_disabled
+        if self._completions_need_update or opt_disabled('completions_skip'):
             _t0 = time.perf_counter()
             self.update_completions()
             _t_comp = time.perf_counter() - _t0
@@ -1176,7 +1178,6 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         # Only emit the full signal when history actually changed.
         # When HistoryList skipped (no data change), just clear the verif queue directly
         # to avoid the expensive signal dispatch (~0.8s with unidentified receivers).
-        from ._perf_flags import opt_disabled
         _t0 = time.perf_counter()
         if not opt_disabled('history_skip') and getattr(self.history_list, '_update_skipped', False):
             self.tx_update_mgr.verifs_get_and_clear()

@@ -976,6 +976,10 @@ class Abstract_Wallet(PrintError, SPVDelegate):
         extended periods by the verifier thread, causing UI hangs. Reading
         dict.values() without the lock is safe under CPython's GIL, and a
         slightly stale count is acceptable for this display-only value. '''
+        from electroncash_gui.qt._perf_flags import opt_disabled
+        if opt_disabled('lock_removal'):
+            with self.lock:
+                return sum(1 for h in self.unverified_tx.values() if h > 0)
         return sum(1 for h in self.unverified_tx.values() if h > 0)
 
     def undo_verifications(self, blockchain, height):

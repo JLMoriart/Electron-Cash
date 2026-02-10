@@ -94,6 +94,9 @@ class ContactList(PrintError, MyTreeWidget):
 
     def _pre_check_skip(self):
         '''Skip the entire update() when the contact count hasn't changed.'''
+        from ._perf_flags import opt_disabled
+        if opt_disabled('contact_skip'):
+            return False
         if self.cleaned_up:
             return True
         if self._last_contact_count is None:
