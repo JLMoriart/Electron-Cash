@@ -62,10 +62,23 @@ class UTXOList(MyTreeWidget):
                               deferred_updates = True, save_sort_settings = True)
         self.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.setSortingEnabled(True)
+        # Override ResizeToContents (set by base class) with Interactive for
+        # non-stretch columns to avoid O(N) text measurement hangs.
+        from ._perf_flags import opt_disabled
+        if not opt_disabled('resize_interactive'):
+            header = self.header()
+            for col in range(len(columns)):
+                if col != UTXOList.Col.label:
+                    header.setSectionResizeMode(col, QHeaderView.Interactive)
+            self.setColumnWidth(self.Col.address, 380)
+            self.setColumnWidth(self.Col.amount, 120)
+            self.setColumnWidth(self.Col.height, 70)
+            self.setColumnWidth(self.Col.output_point, 200)
         self.wallet = self.parent.wallet
         self.parent.ca_address_default_changed_signal.connect(self._ca_on_address_default_change)
         self.parent.gui_object.cashaddr_toggled_signal.connect(self.update)
         self.utxos = list()
+        self._last_utxo_count = None
         # cache some values to avoid constructing Qt objects for every pass through self.on_update (this is important for large wallets)
         self.monospaceFont = QFont(MONOSPACE_FONT)
         self.lightBlue = QColor('lightblue') if not ColorScheme.dark_scheme else QColor('blue')
@@ -85,6 +98,16 @@ class UTXOList(MyTreeWidget):
         except TypeError: pass
         try: self.parent.gui_object.cashaddr_toggled_signal.disconnect(self.update)
         except TypeError: pass
+
+    def _pre_check_skip(self):
+        '''Skip the entire update() when the UTXO count hasn't changed.'''
+        if self.cleaned_up:
+            return True
+        if self._last_utxo_count is None:
+            return False
+        return len(self.wallet.get_utxos(exclude_frozen=False, mature=False,
+                                         confirmed_only=False, exclude_slp=False,
+                                         exclude_tokens=False)) == self._last_utxo_count
 
     def if_not_dead(func):
         '''Boilerplate: Check if cleaned up, and if so, don't execute method'''
@@ -111,6 +134,9 @@ class UTXOList(MyTreeWidget):
 
     @if_not_dead
     def on_update(self):
+        self._last_utxo_count = len(self.wallet.get_utxos(exclude_frozen=False, mature=False,
+                                                           confirmed_only=False, exclude_slp=False,
+                                                           exclude_tokens=False))
         local_maturity_height = (self.wallet.get_local_height()+1) - COINBASE_MATURITY
         prev_selection = self.get_selected() # cache previous selection, if any
         self.clear()

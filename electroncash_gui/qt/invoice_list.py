@@ -38,9 +38,17 @@ class InvoiceList(MyTreeWidget):
         self.setSortingEnabled(True)
         self.header().setSectionResizeMode(1, QHeaderView.Interactive)
         self.setColumnWidth(1, 200)
+        self._last_invoice_count = None
+
+    def _pre_check_skip(self):
+        '''Skip the entire update() when the invoice count hasn't changed.'''
+        if self._last_invoice_count is None:
+            return False
+        return len(self.parent.invoices.unpaid_invoices()) == self._last_invoice_count
 
     def on_update(self):
         inv_list = self.parent.invoices.unpaid_invoices()
+        self._last_invoice_count = len(inv_list)
         self.clear()
         for pr in inv_list:
             key = pr.get_id()

@@ -740,6 +740,13 @@ class MyTreeWidget(QTreeWidget):
             self.deferred_update_ct += 1
         return ret
 
+    def _pre_check_skip(self):
+        '''Override in subclasses to return True when the data hasn't changed
+        and the full update() can be skipped entirely — before any Qt state
+        (setUpdatesEnabled, setSortingEnabled) is toggled.  The default
+        implementation always returns False (never skips).'''
+        return False
+
     def update(self):
         # Defer updates if editing
         if self.editor:
@@ -751,17 +758,51 @@ class MyTreeWidget(QTreeWidget):
             # on initial synch or when new TX's arrive.
             if self.should_defer_update_incr():
                 return
+            # Pre-check: let subclasses bail out BEFORE we touch any Qt
+            # state (setUpdatesEnabled / setSortingEnabled).  Each toggle
+            # of those flags can trigger Qt-internal layout / paint events,
+            # so skipping them entirely avoids ~0.2-0.4 s of C++ overhead
+            # per call on widgets with many items.
+            if self._pre_check_skip():
+                self._update_skipped = True
+                return
             self.setUpdatesEnabled(False)
             scroll_pos_val = self.verticalScrollBar().value() # save previous scroll bar position
+            had_sorting = self.isSortingEnabled()
+            if had_sorting:
+                self.setSortingEnabled(False)  # Disable sorting during bulk item insertion to avoid O(N² log N)
+            self._update_skipped = False
             self.on_update()
+            if self._update_skipped:
+                # Subclass signaled nothing changed — restore state without expensive repaint/re-sort
+                self.setUpdatesEnabled(True)
+                if had_sorting:
+                    self.setSortingEnabled(True)
+                return
             self.deferred_update_ct = 0
             weakSelf = Weak.ref(self)
             def restoreScrollBar():
                 slf = weakSelf()
                 if slf:
+                    import time as _time
+                    _name = type(slf).__name__
+                    _count = slf.topLevelItemCount()
+                    _t0 = _time.perf_counter()
                     slf.updateGeometry()
+                    _t1 = _time.perf_counter()
                     slf.verticalScrollBar().setValue(scroll_pos_val) # restore scroll bar to previous
                     slf.setUpdatesEnabled(True)
+                    _t2 = _time.perf_counter()
+                    if had_sorting:
+                        slf.setSortingEnabled(True)  # Re-enable sorting after updates are re-enabled (triggers one O(N log N) sort)
+                    _t3 = _time.perf_counter()
+                    _total = _t3 - _t0
+                    if _total > 0.01:
+                        print(f"[TIMING] restoreScrollBar({_name}, {_count} items): "
+                              f"updateGeometry={_t1-_t0:.4f}s  "
+                              f"setUpdatesEnabled={_t2-_t1:.4f}s  "
+                              f"setSortingEnabled={_t3-_t2:.4f}s  "
+                              f"TOTAL={_total:.4f}s")
             QTimer.singleShot(0, restoreScrollBar) # need to do this from a timer some time later due to Qt quirks
         if self.current_filter:
             self.filter(self.current_filter)

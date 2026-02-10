@@ -29,7 +29,7 @@ from collections import defaultdict
 from .util import MyTreeWidget, MONOSPACE_FONT, SortableTreeWidgetItem, rate_limited, webopen, ColorScheme
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QFont, QColor, QKeySequence, QCursor, QIcon
-from PyQt5.QtWidgets import QTreeWidgetItem, QAbstractItemView, QMenu, QToolTip
+from PyQt5.QtWidgets import QTreeWidgetItem, QAbstractItemView, QMenu, QToolTip, QHeaderView
 from electroncash.i18n import _
 from electroncash.address import Address
 from electroncash.plugins import run_hook
@@ -107,6 +107,23 @@ class AddressList(MyTreeWidget, PrintError):
         if fx and fx.get_fiat_address_config():
             headers.insert(4, '{} {}'.format(fx.get_currency(), _('Balance')))
         self.update_headers(headers)
+        # Override ResizeToContents (set by base class update_headers) with
+        # Interactive for non-stretch columns. ResizeToContents measures the
+        # text width of EVERY item per column — O(N) in C++ — which causes
+        # multi-second hangs with 137k+ address items.
+        from ._perf_flags import opt_disabled
+        if not opt_disabled('resize_interactive'):
+            header = self.header()
+            for col in range(len(headers)):
+                if col != self.stretch_column:
+                    header.setSectionResizeMode(col, QHeaderView.Interactive)
+            self.setColumnWidth(0, 380)  # Address
+            self.setColumnWidth(1, 50)   # Index
+            self.setColumnWidth(3, 120)  # Balance
+            self.setColumnWidth(4, 50)   # Tx
+            if len(headers) > 5:
+                self.setColumnWidth(4, 120)  # Fiat Balance
+                self.setColumnWidth(5, 50)   # Tx (shifted right)
 
     @rate_limited(1.0, ts_after=True) # We rate limit the address list refresh no more than once every second
     def update(self):
@@ -209,6 +226,7 @@ class AddressList(MyTreeWidget, PrintError):
                     is_hidden = self.wallet.is_used(address)
                 balance = sum(self.wallet.get_addr_balance(address))
                 address_text = address.to_ui_string()
+                label = self.wallet.labels.get(address.to_storage_string(), '')
                 # Cash Accounts
                 ca_info, ca_list = None, ca_by_addr.get(address)
                 if ca_list:
@@ -222,7 +240,6 @@ class AddressList(MyTreeWidget, PrintError):
                     if ca_info:
                         address_text = ca_info.emoji + " " + address_text
                 # /Cash Accounts
-                label = self.wallet.labels.get(address.to_storage_string(), '')
                 balance_text = self.parent.format_amount(balance, whitespaces=True)
                 columns = [address_text, str(n), label, balance_text, str(num)]
                 if fx:

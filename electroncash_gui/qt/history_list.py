@@ -66,6 +66,7 @@ class HistoryList(MyTreeWidget, PrintError):
         self.itemChanged.connect(self.item_changed)
 
         self.has_unknown_balances = False
+        self._last_tx_count = -1
 
     def diagnostic_name(self):
         return f"{super().diagnostic_name()}/{self.wallet.diagnostic_name()}"
@@ -73,12 +74,39 @@ class HistoryList(MyTreeWidget, PrintError):
     def clean_up(self):
         self.cleaned_up = True
 
+    def _pre_check_skip(self):
+        '''Skip the entire update() — including setUpdatesEnabled toggles —
+        when the transaction set hasn't changed.'''
+        from ._perf_flags import opt_disabled
+        if opt_disabled('history_skip'):
+            return False
+        if self.cleaned_up:
+            return True
+        return len(self.wallet.transactions) == self._last_tx_count
+
     def refresh_headers(self):
         headers = ['', '', _('Date'), _('Description') , _('Amount'), _('Balance')]
         fx = self.parent.fx
         if fx and fx.show_history():
             headers.extend(['%s '%fx.ccy + _('Amount'), '%s '%fx.ccy + _('Balance')])
         self.update_headers(headers)
+        # Override ResizeToContents (set by base class update_headers) with
+        # Interactive for non-stretch columns. ResizeToContents measures the
+        # text width of EVERY item per column — O(N) in C++ — which causes
+        # multi-second hangs with 18k+ history items.
+        from ._perf_flags import opt_disabled
+        if not opt_disabled('resize_interactive'):
+            header = self.header()
+            for col in range(len(headers)):
+                if col != self.stretch_column:
+                    header.setSectionResizeMode(col, QHeaderView.Interactive)
+            self.setColumnWidth(0, 32)   # status icon
+            self.setColumnWidth(2, 150)  # Date
+            self.setColumnWidth(4, 120)  # Amount
+            self.setColumnWidth(5, 120)  # Balance
+            if len(headers) > 6:
+                self.setColumnWidth(6, 120)  # Fiat Amount
+                self.setColumnWidth(7, 120)  # Fiat Balance
 
     def get_domain(self):
         '''Replaced in address_dialog.py'''
@@ -116,7 +144,11 @@ class HistoryList(MyTreeWidget, PrintError):
 
     @profiler
     def on_update(self):
+        _t_start = time.time()
         self.wallet = self.parent.wallet
+        # Record the current tx count so that _pre_check_skip() can detect
+        # that nothing changed on subsequent calls.
+        self._last_tx_count = len(self.wallet.transactions)
         h = self.wallet.get_history(self.get_domain(), reverse=True, receives_before_sends=True,
                                     include_tokens=True, include_tokens_balances=False)
         sels = self.selectedItems()
@@ -126,6 +158,8 @@ class HistoryList(MyTreeWidget, PrintError):
         self.has_unknown_balances = False
         fx = self.parent.fx
         if fx: fx.history_used_spot = False
+        items = []
+        selected_item = None
         for h_item in h:
             tx_hash, height, conf, timestamp, value, balance, token_deltas, token_balances = h_item
             label = self.wallet.get_label(tx_hash)
@@ -176,13 +210,23 @@ class HistoryList(MyTreeWidget, PrintError):
                 item.setForeground(4, self.withdrawalBrush)
                 item.setForeground(6, self.withdrawalBrush)
             item.setData(0, Qt.UserRole, tx_hash)
-            self.addTopLevelItem(item, tx_hash)
+            self._item_cache[tx_hash] = item
+            items.append(item)
             if current_tx == tx_hash:
-                # Note that it's faster to setSelected once the item is in
-                # the tree. Also note that doing setSelected() on the item
-                # itself is much faster than doing setCurrentItem()
-                # which must do a linear search in the tree (wastefully)
-                item.setSelected(True)
+                selected_item = item
+        # Insert items — batch mode reduces ~18k individual
+        # Python→SIP→C++ round trips to a single call
+        from ._perf_flags import opt_disabled as _od
+        if _od('batch_insert'):
+            for it in items:
+                self.addTopLevelItem(it, it.data(0, Qt.UserRole))
+        else:
+            QTreeWidget.addTopLevelItems(self, items)
+        if selected_item is not None:
+            selected_item.setSelected(True)
+        _elapsed = time.time() - _t_start
+        if _elapsed > 0.1:
+            print(f"[TIMING] HistoryList.on_update(): {len(items)} items built+inserted in {_elapsed:.4f}s")
 
     def on_doubleclick(self, item, column):
         if self.permit_edit(item, column):

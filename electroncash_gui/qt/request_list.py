@@ -46,6 +46,13 @@ class RequestList(MyTreeWidget):
         self.setColumnWidth(0, 180)
         self.hideColumn(1)
         self.wallet = parent.wallet
+        self._last_req_count = None
+
+    def _pre_check_skip(self):
+        '''Skip the entire update() when the request count hasn't changed.'''
+        if self._last_req_count is None:
+            return False
+        return len(self.wallet.receive_requests) == self._last_req_count
 
     def item_changed(self, item):
         if item is None:
@@ -101,6 +108,8 @@ class RequestList(MyTreeWidget):
             self.parent.expires_combo.show()
 
     def on_update(self):
+        self._last_req_count = len(self.wallet.receive_requests)
+
         self.chkVisible()
 
         # update the receive address if necessary

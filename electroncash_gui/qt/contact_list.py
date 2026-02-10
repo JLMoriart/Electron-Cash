@@ -70,6 +70,7 @@ class ContactList(PrintError, MyTreeWidget):
         self.icon_openalias = QIcon(":icons/openalias-logo.svg")
         self.icon_contacts = QIcon(":icons/tab_contacts.png")
         self.icon_unverif = QIcon(":/icons/unconfirmed.svg")
+        self._last_contact_count = None
         # the below dict is ephemeral and goes away on wallet close --
         # it's populated ultimately by the notify() subsystem in main_window
         self._ca_pending_conf : Dict[str, Tuple[str, Address]] = dict()  #  "txid" -> ("name", Address)
@@ -90,6 +91,14 @@ class ContactList(PrintError, MyTreeWidget):
         except TypeError: pass
         if self.wallet.network:
             self.wallet.network.unregister_callback(self._ca_callback)
+
+    def _pre_check_skip(self):
+        '''Skip the entire update() when the contact count hasn't changed.'''
+        if self.cleaned_up:
+            return True
+        if self._last_contact_count is None:
+            return False
+        return len(self.parent.contacts.get_all(nocopy=True)) == self._last_contact_count
 
     def on_permit_edit(self, item, column):
         # openalias items shouldn't be editable
@@ -376,6 +385,7 @@ class ContactList(PrintError, MyTreeWidget):
     def on_update(self):
         if self.cleaned_up:
             return
+        self._last_contact_count = len(self.parent.contacts.get_all(nocopy=True))
         item = self.currentItem()
         current_contact = item.data(0, self.DataRoles.Contact) if item else None
         selected = self.selectedItems() or []

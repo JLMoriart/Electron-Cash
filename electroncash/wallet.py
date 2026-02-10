@@ -299,6 +299,7 @@ class Abstract_Wallet(PrintError, SPVDelegate):
         # this dict, but simply add/remove items to/from it in 1-liners (which
         # Python's GIL makes thread-safe implicitly).
         self._addr_bal_cache = {}
+        self._total_balance_cache = None  # cached result of get_balance() for domain=None
 
         # We keep a set of the wallet and receiving addresses so that is_mine()
         # checks are O(logN) rather than O(N). This creates/resets that cache.
@@ -752,6 +753,7 @@ class Abstract_Wallet(PrintError, SPVDelegate):
             self.slp.clear()
             self.save_transactions()
             self._addr_bal_cache = {}
+            self._total_balance_cache = None
             self._history = {}
             self.tx_addr_hist = defaultdict(set)
             self.cashacct.on_clear_history()
@@ -968,9 +970,13 @@ class Abstract_Wallet(PrintError, SPVDelegate):
 
     def get_unverified_tx_pending_count(self):
         ''' Returns the number of unverified tx's that are confirmed and are
-        still in process and should be verified soon.'''
-        with self.lock:
-            return len([1 for height in self.unverified_tx.values() if height > 0])
+        still in process and should be verified soon.
+        Note: we intentionally avoid acquiring self.lock here. This method is
+        called from the GUI thread every 500ms and the lock can be held for
+        extended periods by the verifier thread, causing UI hangs. Reading
+        dict.values() without the lock is safe under CPython's GIL, and a
+        slightly stale count is acceptable for this display-only value. '''
+        return sum(1 for h in self.unverified_tx.values() if h > 0)
 
     def undo_verifications(self, blockchain, height):
         '''Used by the verifier when a reorg has happened'''
@@ -987,6 +993,7 @@ class Abstract_Wallet(PrintError, SPVDelegate):
             if txs: self.cashacct.undo_verifications_hook(txs)
         if txs:
             self._addr_bal_cache = {}  # this is probably not necessary -- as the receive_history_callback will invalidate bad cache items -- but just to be paranoid we clear the whole balance cache on reorg anyway as a safety measure
+            self._total_balance_cache = None
         for tx_hash in txs:
             self._update_request_statuses_touched_by_tx(tx_hash)
         return txs
@@ -1504,6 +1511,13 @@ class Abstract_Wallet(PrintError, SPVDelegate):
                     tokens=False):
         """If tokens=True, returns a 4-tuple: (confirmed, unconfirmed, unmatured, tokens), otherwise returns a
            3-tuple of just (confirmed, unconfirmed, unmatured) """
+        # Fast path: return cached whole-wallet balance if available
+        from electroncash_gui.qt._perf_flags import opt_disabled
+        _cache_total = domain is None and not exclude_frozen_coins and not exclude_frozen_addresses
+        if _cache_total and not opt_disabled('balance_cache'):
+            cached = self._total_balance_cache
+            if cached is not None:
+                return cached[:3 + int(tokens)]
         if domain is None:
             domain = self.get_addresses()
         if exclude_frozen_addresses:
@@ -1517,6 +1531,8 @@ class Abstract_Wallet(PrintError, SPVDelegate):
             uu += u
             xx += x
             toks += tok
+        if _cache_total:
+            self._total_balance_cache = (cc, uu, xx, toks)
         return (cc, uu, xx, toks)[:3 + int(tokens)]
 
     def get_address_history(self, address):
@@ -1754,6 +1770,7 @@ class Abstract_Wallet(PrintError, SPVDelegate):
                         # this function later.
                         put_pruned_txo(ser, tx_hash)
                     self._addr_bal_cache.pop(addr, None)  # invalidate cache entry
+                    self._total_balance_cache = None
                     del dd, prevout_hash, prevout_n, ser
                 elif addr is None:
                     # Unknown/unparsed address.. may be a strange p2sh scriptSig
@@ -1765,6 +1782,7 @@ class Abstract_Wallet(PrintError, SPVDelegate):
                     if addr2 is not None and self.is_mine(addr2):
                         add_to_self_txi(tx_hash, addr2, ser, v, token_data)
                         self._addr_bal_cache.pop(addr2, None)  # invalidate cache entry
+                        self._total_balance_cache = None
                     else:
                         # Not found in self.txo. It may still be one of ours
                         # however since tx's can come in out of order due to
@@ -1825,6 +1843,7 @@ class Abstract_Wallet(PrintError, SPVDelegate):
                         ct_dd[n] = token_data
                         self.print_error(f"Adding CashTokens txo: {tx_hash} -> {addr} -> {n} -> {token_data!r}")
                     self._addr_bal_cache.pop(addr, None)  # invalidate cache entry
+                    self._total_balance_cache = None
                 # give v to txi that spends me
                 next_tx = pop_pruned_txo(ser)
                 if next_tx is not None and mine:
@@ -1875,6 +1894,7 @@ class Abstract_Wallet(PrintError, SPVDelegate):
                         prev_hash, prev_n = ser.split(':')
                         if prev_hash == tx_hash:
                             self._addr_bal_cache.pop(addr, None)  # invalidate cache entry
+                            self._total_balance_cache = None
                             del_idx.append(idx)
                             self.pruned_txo[ser] = next_tx
                             self.pruned_txo_values.add(next_tx)
@@ -1901,6 +1921,7 @@ class Abstract_Wallet(PrintError, SPVDelegate):
             d = self.txo.get(tx_hash, {})  # tx_hash -> Address -> List[Tuple[N, value, is_cb]]
             for addr in d:
                 self._addr_bal_cache.pop(addr, None)  # invalidate cache entry
+            self._total_balance_cache = None
 
             try: self.txi.pop(tx_hash)
             except KeyError: self.print_error("tx was not in input history", tx_hash)
@@ -1975,6 +1996,7 @@ class Abstract_Wallet(PrintError, SPVDelegate):
                     self.remove_transaction(tx_hash)
                     removed_ct += 1
             self._addr_bal_cache.pop(addr, None)  # unconditionally invalidate cache entry
+            self._total_balance_cache = None
             self._history[addr] = hist
 
             for tx_hash, tx_height in hist:
@@ -3737,6 +3759,7 @@ class Abstract_Wallet(PrintError, SPVDelegate):
         # paranoia, not really necessary -- just want to maintain the invariant that when we modify address history
         # below we invalidate cache.
         self._addr_bal_cache.pop(address, None)
+        self._total_balance_cache = None
         self.invalidate_address_set_cache()
         if address not in self._history:
             self._history[address] = []
@@ -3976,6 +3999,7 @@ class ImportedWalletBase(Simple_Wallet):
                 self.ct_txi.pop(tx_hash, None)
                 self.ct_txo.pop(tx_hash, None)
                 self._addr_bal_cache.pop(address, None)  # not strictly necessary, above calls also have this side-effect. but here to be safe. :)
+                self._total_balance_cache = None
                 if self.verifier:
                     # TX is now gone. Toss its SPV proof in case we have it
                     # in memory. This allows user to re-add PK again and it
