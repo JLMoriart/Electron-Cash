@@ -195,7 +195,8 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         self.console_tab = self.create_console_tab()
         self.contacts_tab = self.create_contacts_tab()
         self.converter_tab = self.create_converter_tab()
-        tabs.addTab(self.create_history_tab(), QIcon(":icons/tab_history.png"), _('History'))
+        self.home_tab = self.create_history_tab()
+        tabs.addTab(self.home_tab, QIcon(":icons/tab_history.png"), _('Home'))
         tabs.addTab(self.send_tab, QIcon(":icons/tab_send.png"), _('Send'))
         tabs.addTab(self.receive_tab, QIcon(":icons/tab_receive.png"), _('Receive'))
         # clears/inits the opreturn widgets
@@ -1121,7 +1122,72 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         from .history_list import HistoryList
         self.history_list = l = HistoryList(self)
         l.searchable_list = l
-        return l
+
+        # --- Right panel: Receiving address section ---
+        help_text = _("Provide this string of letters and numbers (or the "
+                       "corresponding QR code) to anyone who wants to send you "
+                       "Bitcoin Cash. When they send it, you'll see it arrive "
+                       "in the transaction list below within seconds.")
+        receiving_label = HelpLabel(_("RECEIVING ADDRESS"), help_text)
+
+        self.home_address_label = QLabel("")
+        self.home_address_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.home_address_label.setWordWrap(True)
+
+        copy_address_btn = QPushButton(QIcon(":icons/copy.png"), _("Copy Address"))
+        copy_address_btn.clicked.connect(self.home_copy_address)
+
+        self.home_qr = QRCodeWidget(fixedSize=200)
+
+        create_request_btn = QPushButton(_("Create a Payment Request"))
+        create_request_btn.clicked.connect(self.show_receive_tab)
+
+        send_tx_btn = QPushButton(_("Send a Transaction"))
+        send_tx_btn.clicked.connect(self.show_send_tab)
+        # Double the size and font of the Send button
+        font = send_tx_btn.font()
+        font.setPointSize(font.pointSize() * 2)
+        send_tx_btn.setFont(font)
+        natural_h = send_tx_btn.sizeHint().height()
+        send_tx_btn.setMinimumHeight(natural_h * 2)
+        # Make horizontal padding equal to vertical padding
+        vert_pad = (natural_h * 2 - send_tx_btn.fontMetrics().height()) // 2
+        send_tx_btn.setStyleSheet("QPushButton {{ padding-left: {}px; padding-right: {}px; }}".format(vert_pad, vert_pad))
+
+        # Receiving address section in a bordered frame
+        recv_frame = QFrame()
+        recv_frame.setFrameStyle(QFrame.Box | QFrame.Plain)
+        recv_frame.setStyleSheet("QFrame { border: 1px solid #455364; }")
+        recv_frame_layout = QVBoxLayout(recv_frame)
+        recv_frame_layout.addWidget(receiving_label, 0, Qt.AlignHCenter)
+        recv_frame_layout.addWidget(self.home_address_label, 0, Qt.AlignHCenter)
+        recv_frame_layout.addWidget(copy_address_btn, 0, Qt.AlignHCenter)
+        recv_frame_layout.addWidget(self.home_qr, 0, Qt.AlignHCenter)
+        recv_frame_layout.addWidget(create_request_btn, 0, Qt.AlignHCenter)
+
+        right_vbox = QVBoxLayout()
+        right_vbox.addWidget(recv_frame)
+        right_vbox.addWidget(send_tx_btn, 0, Qt.AlignHCenter)
+        right_vbox.addStretch(1)
+
+        # --- Wrapper widget with showEvent to refresh address ---
+        weakSelf = Weak.ref(self)
+
+        class HomeTab(QWidget):
+            def showEvent(slf, e):
+                super().showEvent(e)
+                if e.isAccepted():
+                    wslf = weakSelf()
+                    if wslf:
+                        wslf.update_home_tab_address()
+
+        w = HomeTab()
+        w.searchable_list = l
+        hbox = QHBoxLayout(w)
+        hbox.addWidget(l, 1)       # history list gets all extra width
+        hbox.addLayout(right_vbox)  # right panel at natural width
+
+        return w
 
     def create_token_history_tab(self):
         from .token_history_list import TokenHistoryList
@@ -1150,6 +1216,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
             self.op_return_toolong = False
         for x in self.send_tab_opreturn_widgets:
             x.setVisible(b)
+        self.update_send_tab_row_tints()
         # receive tab
         for x in self.receive_tab_opreturn_widgets:
             x.setVisible(b)
@@ -1575,6 +1642,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         self.receive_address_e.setText(text)
         self.receive_token_address_e.setText(text_token)
         self.cash_account_e.set_cash_acct()
+        self.update_home_tab_address()
 
     @rate_limited(0.250, ts_after=True)  # this function potentially re-computes the QR widget, so it's rate limited to once every 250ms
     def check_and_reset_receive_address_if_needed(self):
@@ -1632,6 +1700,28 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
 
     def show_receive_tab(self):
         self.tabs.setCurrentIndex(self.tabs.indexOf(self.receive_tab))
+
+    def show_home_tab(self):
+        self.tabs.setCurrentIndex(self.tabs.indexOf(self.home_tab))
+
+    def update_home_tab_address(self):
+        if not hasattr(self, 'home_address_label'):
+            return
+        addr = getattr(self, 'receive_address', None)
+        if addr is None:
+            addr = self.wallet.get_receiving_address()
+        if addr:
+            addr_text = addr.to_full_ui_string()
+            self.home_address_label.setText(addr_text)
+            self.home_qr.setData(addr_text)
+        else:
+            self.home_address_label.setText("")
+            self.home_qr.setData(None)
+
+    def home_copy_address(self):
+        text = self.home_address_label.text()
+        if text:
+            self.copy_to_clipboard(text, _("Address copied to clipboard"))
 
     def receive_at(self, addr):
         self.receive_address = addr
@@ -1696,13 +1786,8 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
                 "    recipient2, amount2 \n"
                 "    etc..."
                 "</pre>")
-        self.payto_label = payto_label = HelpLabel(_('Pay &to'), msg)
+        self.payto_label = payto_label = HelpLabel(_('Send &to'), msg)
         payto_label.setBuddy(self.payto_e)
-        qmark = ":icons/question-mark-dark.svg" if ColorScheme.dark_scheme else ":icons/question-mark-light.svg"
-        qmark_help_but = HelpButton(msg, button_text='', fixed_size=False, icon=QIcon(qmark), custom_parent=self)
-        self.payto_e.addWidget(qmark_help_but, index=0)
-        grid.addWidget(payto_label, 1, 0)
-        grid.addWidget(self.payto_e, 1, 1, 1, -1)
 
         completer = QCompleter(self.payto_e)
         completer.setCaseSensitivity(False)
@@ -1711,39 +1796,41 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
 
         msg = _('Description of the transaction (not mandatory).') + '\n\n'\
               + _('The description is not sent to the recipient of the funds. It is stored in your wallet file, and displayed in the \'History\' tab.')
-        description_label = HelpLabel(_('&Description'), msg)
-        grid.addWidget(description_label, 2, 0)
+        description_label = HelpLabel(_('Private &Note'), msg)
         self.message_e = MyLineEdit()
         description_label.setBuddy(self.message_e)
-        grid.addWidget(self.message_e, 2, 1, 1, -1)
 
         msg_opreturn = ( _('OP_RETURN data (optional).') + '\n\n'
                         + _('Posts a PERMANENT note to the BCH blockchain as part of this transaction.')
                         + '\n\n' + _('If you specify OP_RETURN text, you may leave the \'Pay to\' field blank.') )
         self.opreturn_label = HelpLabel(_('&OP_RETURN'), msg_opreturn)
-        grid.addWidget(self.opreturn_label,  3, 0)
         self.message_opreturn_e = MyLineEdit()
         self.opreturn_label.setBuddy(self.message_opreturn_e)
-        hbox = QHBoxLayout()
-        hbox.addWidget(self.message_opreturn_e)
-        self.opreturn_rawhex_cb = QCheckBox(_('&Raw hex script'))
-        self.opreturn_rawhex_cb.setToolTip(_('If unchecked, the textbox contents are UTF8-encoded into a single-push script: <tt>OP_RETURN PUSH &lt;text&gt;</tt>. If checked, the text contents will be interpreted as a raw hexadecimal script to be appended after the OP_RETURN opcode: <tt>OP_RETURN &lt;script&gt;</tt>.'))
-        hbox.addWidget(self.opreturn_rawhex_cb)
-        grid.addLayout(hbox,  3 , 1, 1, -1)
+        self.opreturn_rawhex_cb = QCheckBox()
+        rawhex_help_text = (_('Raw hex script') + '\n\n'
+            + _('Check this box if the text you\'ve entered in the "OP_RETURN" field is the raw hexadecimal script to be appended to the OP_RETURN opcode.') + '\n'
+            + _('>> (OP_RETURN <script>)') + '\n\n'
+            + _('Otherwise, it will be UTF-8 encoded into a single-push script.') + '\n'
+            + _('>> (OP_RETURN PUSH <text>)'))
+        self.opreturn_rawhex_lbl = HelpLabel(_('Raw hex script'), rawhex_help_text)
+        self.opreturn_rawhex_container = QWidget()
+        rawhex_layout = QHBoxLayout(self.opreturn_rawhex_container)
+        rawhex_layout.setContentsMargins(0, 0, 0, 0)
+        rawhex_layout.setSpacing(4)
+        rawhex_layout.addWidget(self.opreturn_rawhex_cb)
+        rawhex_layout.addWidget(self.opreturn_rawhex_lbl)
 
         self.send_tab_opreturn_widgets = [
             self.message_opreturn_e,
-            self.opreturn_rawhex_cb,
+            self.opreturn_rawhex_container,
             self.opreturn_label,
         ]
 
-        self.from_label = QLabel(_('&From'))
-        grid.addWidget(self.from_label, 4, 0)
+        self.from_label = QLabel(_('&Inputs'))
         self.from_list = MyTreeWidget(self, self.from_list_menu, ['',''])
         self.from_label.setBuddy(self.from_list)
         self.from_list.setHeaderHidden(True)
         self.from_list.setMaximumHeight(80)
-        grid.addWidget(self.from_list, 4, 1, 1, -1)
         self.set_pay_from([])
 
         msg = _('Amount to be sent.') + '\n\n' \
@@ -1752,28 +1839,73 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
               + _('Keyboard shortcut: type "!" to send all your coins.')
         amount_label = HelpLabel(_('&Amount'), msg)
         amount_label.setBuddy(self.amount_e)
-        grid.addWidget(amount_label, 5, 0)
-        grid.addWidget(self.amount_e, 5, 1)
 
         self.fiat_send_e = AmountEdit(self.fx.get_currency if self.fx else '')
+        self.bidi_icon = QLabel()
+        bidi_icon_path = ":icons/bidirectional_arrows_darkmode.png" if ColorScheme.dark_scheme else ":icons/bidi_arrow.png"
+        self.bidi_icon.setPixmap(QIcon(bidi_icon_path).pixmap(16))
         if not self.fx or not self.fx.is_enabled():
             self.fiat_send_e.setVisible(False)
-        grid.addWidget(self.fiat_send_e, 5, 2)
+            self.bidi_icon.setVisible(False)
         self.amount_e.frozen.connect(
             lambda: self.fiat_send_e.setFrozen(self.amount_e.isReadOnly()))
 
         self.max_button = EnterButton(_("&Max"), self.spend_max)
         self.max_button.setFixedWidth(140)
         self.max_button.setCheckable(True)
-        grid.addWidget(self.max_button, 5, 3)
-        hbox = self.send_tab_extra_plugin_controls_hbox = QHBoxLayout()
-        hbox.addStretch(1)
-        grid.addLayout(hbox, 5, 4, 1, -1)
+        self.send_tab_extra_plugin_controls_hbox = QHBoxLayout()
 
         msg = _('Bitcoin Cash transactions are in general not free. A transaction fee is paid by the sender of the funds.') + '\n\n'\
               + _('The amount of fee can be decided freely by the sender. However, transactions with low fees take more time to be processed.') + '\n\n'\
               + _('A suggested fee is automatically added to this field. You may override it. The suggested fee increases with the size of the transaction.')
-        self.fee_e_label = HelpLabel(_('F&ee'), msg)
+        self.fee_e_label = HelpLabel(_('Custom F&ee'), msg)
+
+        # --- Build row containers with alternating backgrounds ---
+        label_width = 80
+
+        def make_row_frame(widgets_list):
+            """Create a QFrame containing widgets in an HBoxLayout."""
+            frame = QFrame()
+            frame.setFrameShape(QFrame.NoFrame)
+            layout = QHBoxLayout(frame)
+            layout.setContentsMargins(4, 2, 4, 2)
+            for w in widgets_list:
+                if isinstance(w, int):
+                    layout.addStretch(w)
+                elif isinstance(w, QLayout):
+                    layout.addLayout(w)
+                elif isinstance(w, tuple):
+                    layout.addWidget(w[0], w[1])  # (widget, stretch)
+                else:
+                    layout.addWidget(w)
+            return frame
+
+        # Row 1: Pay to
+        payto_label.setFixedWidth(label_width)
+        row1 = make_row_frame([payto_label, (self.payto_e, 1)])
+        grid.addWidget(row1, 1, 0, 1, -1)
+
+        # Row 2: Amount
+        amount_label.setFixedWidth(label_width)
+        row2 = make_row_frame([amount_label, self.amount_e, self.bidi_icon, self.fiat_send_e, self.max_button, 1])
+        grid.addWidget(row2, 2, 0, 1, -1)
+
+        # Row 3: Description
+        description_label.setFixedWidth(label_width)
+        row3 = make_row_frame([description_label, (self.message_e, 1)])
+        grid.addWidget(row3, 3, 0, 1, -1)
+
+        # Row 4: OP_RETURN
+        self.opreturn_label.setFixedWidth(label_width)
+        row4 = make_row_frame([self.opreturn_label, (self.message_opreturn_e, 1), self.opreturn_rawhex_container])
+        self.send_tab_opreturn_widgets.append(row4)  # so visibility toggling hides the whole row
+        grid.addWidget(row4, 4, 0, 1, -1)
+
+        # Track alternating row frames for dynamic tinting
+        self.send_tab_row_frames = [row1, row2, row3, row4]
+
+        # Row 5: Fee (no tint)
+        self.fee_e_label.setFixedWidth(label_width)
 
         def fee_cb(dyn, pos, fee_rate):
             if dyn:
@@ -1803,21 +1935,42 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         self.fee_e.editingFinished.connect(self.update_fee)
         self.connect_fields(self, self.amount_e, self.fiat_send_e, self.fee_e)
 
-        grid.addWidget(self.fee_e_label, 6, 0)
-        grid.addWidget(self.fee_slider, 6, 1)
-        grid.addWidget(self.fee_custom_lbl, 6, 1)
-        grid.addWidget(self.fee_e, 6, 2)
+        row5 = make_row_frame([self.fee_e_label, self.fee_slider, self.fee_custom_lbl, self.fee_e, 1])
+        grid.addWidget(row5, 5, 0, 1, -1)
+        self.send_tab_row_frames.append(row5)
 
-        self.preview_button = EnterButton(_("&Preview"), self.do_preview)
-        self.preview_button.setToolTip(_('Display the details of your transactions before signing it.'))
-        self.send_button = EnterButton(_("&Send"), self.do_send)
+        self.update_send_tab_row_tints()
+
         self.clear_button = EnterButton(_("&Clear"), self.do_clear)
-        buttons = QHBoxLayout()
-        buttons.addStretch(1)
-        buttons.addWidget(self.clear_button)
-        buttons.addWidget(self.preview_button)
-        buttons.addWidget(self.send_button)
-        grid.addLayout(buttons, 7, 1, 1, 3)
+        self.preview_button = EnterButton(_("Pre&view Transaction"), self.do_preview)
+        self.preview_button.setToolTip(_('Display the details of your transaction before signing it.'))
+        self.send_button = EnterButton(_("&Send"), self.do_send)
+        self.send_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.send_button.setStyleSheet("font-size: 16px;")
+
+        # Size all three buttons to match: width of widest text + proportional padding
+        fm = self.preview_button.fontMetrics()
+        text_width = fm.horizontalAdvance(self.preview_button.text().replace('&', ''))
+        font_height = fm.height()
+        btn_height = self.preview_button.sizeHint().height()
+        v_padding = btn_height - font_height
+        btn_width = text_width + 2 * (2 * v_padding)
+        for btn in (self.clear_button, self.preview_button, self.send_button):
+            btn.setFixedWidth(btn_width)
+
+        btn_container = QWidget()
+        btn_grid = QGridLayout(btn_container)
+        btn_grid.setContentsMargins(0, 0, 0, 0)
+        btn_grid.addWidget(self.clear_button, 0, 0)
+        btn_grid.addWidget(self.preview_button, 1, 0)
+        btn_grid.addWidget(self.send_button, 0, 1, 2, 1)
+        btn_grid.addLayout(self.send_tab_extra_plugin_controls_hbox, 0, 2, 2, 1, Qt.AlignVCenter)
+        grid.addWidget(btn_container, 6, 0, 2, -1, Qt.AlignLeft)
+
+        # Row 8: From (never tinted — separated from form rows by buttons)
+        self.from_label.setFixedWidth(label_width)
+        self.from_row = make_row_frame([self.from_label, (self.from_list, 1)])
+        grid.addWidget(self.from_row, 8, 0, 1, -1)
 
         self.payto_e.textChanged.connect(self.update_buttons_on_seed)  # hide/unhide various buttons
 
@@ -1892,6 +2045,28 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         w.searchable_list = self.invoice_list
         run_hook('create_send_tab', grid)
         return w
+
+    def update_send_tab_row_tints(self):
+        """Recalculate alternating row tints based on which rows are visible.
+        Uses isHidden() instead of isVisible() because isVisible() returns
+        False for all widgets before the window is shown.
+        Input widgets get transparent backgrounds so the frame tint shows
+        through uniformly. Buttons get a darker tint for contrast."""
+        # Tinted rows: frame 30%, inputs/labels transparent (buttons keep default style)
+        row_tint = (
+            "QFrame { background-color: rgba(0, 0, 0, 0.30); }"
+            " QLabel, QLineEdit, QPlainTextEdit, QSlider, QCheckBox { background-color: transparent; }"
+        )
+        row_no_tint = ""
+        tinted = False
+        for frame in getattr(self, 'send_tab_row_frames', []):
+            if frame.isHidden():
+                continue
+            if tinted:
+                frame.setStyleSheet(row_tint)
+            else:
+                frame.setStyleSheet(row_no_tint)
+            tinted = not tinted
 
     def spend_max(self):
         self.max_button.setChecked(True)
@@ -2012,8 +2187,12 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         (Added for CashShuffle 02/23/2019) '''
         sel = self.from_list.currentItem() and self.from_list.currentItem().data(0, Qt.UserRole)
         self.from_list.clear()
-        self.from_label.setHidden(len(self.pay_from) == 0)
-        self.from_list.setHidden(len(self.pay_from) == 0)
+        hidden = len(self.pay_from) == 0
+        from_row = getattr(self, 'from_row', None)
+        if from_row:
+            from_row.setHidden(hidden)
+        self.from_label.setHidden(hidden)
+        self.from_list.setHidden(hidden)
 
         def name(x):
             return "{}:{}".format(x['prevout_hash'], x['prevout_n'])
@@ -2701,7 +2880,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         if op_return:
             self.message_opreturn_e.setText(op_return)
             self.message_opreturn_e.setHidden(False)
-            self.opreturn_rawhex_cb.setHidden(False)
+            self.opreturn_rawhex_container.setHidden(False)
             self.opreturn_rawhex_cb.setChecked(False)
             self.opreturn_label.setHidden(False)
         elif op_return_raw is not None:
@@ -2711,13 +2890,13 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
                 op_return_raw='empty'
             self.message_opreturn_e.setText(op_return_raw)
             self.message_opreturn_e.setHidden(False)
-            self.opreturn_rawhex_cb.setHidden(False)
+            self.opreturn_rawhex_container.setHidden(False)
             self.opreturn_rawhex_cb.setChecked(True)
             self.opreturn_label.setHidden(False)
         elif not self.config.get('enable_opreturn'):
             self.message_opreturn_e.setText('')
             self.message_opreturn_e.setHidden(True)
-            self.opreturn_rawhex_cb.setHidden(True)
+            self.opreturn_rawhex_container.setHidden(True)
             self.opreturn_label.setHidden(True)
 
         if address and URI.lower().startswith(cashacct.URI_SCHEME + ':'):
@@ -2761,7 +2940,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         self.set_pay_from([])
         self.tx_external_keypairs = {}
         self.message_opreturn_e.setVisible(self.config.get('enable_opreturn', False))
-        self.opreturn_rawhex_cb.setVisible(self.config.get('enable_opreturn', False))
+        self.opreturn_rawhex_container.setVisible(self.config.get('enable_opreturn', False))
         self.opreturn_label.setVisible(self.config.get('enable_opreturn', False))
         self.update_status()
         run_hook('do_clear', self)
@@ -4415,6 +4594,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
     def update_fiat(self):
         b = self.fx and self.fx.is_enabled()
         self.fiat_send_e.setVisible(b)
+        self.bidi_icon.setVisible(b)
         self.fiat_receive_e.setVisible(b)
         self.history_list.refresh_headers()
         self.history_list.update()
@@ -5686,7 +5866,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
 
         # Enabled OP_RETURN stuff even if disabled in prefs. Next do_clear call will reset to prefs presets.
         self.message_opreturn_e.setVisible(True)
-        self.opreturn_rawhex_cb.setVisible(True)
+        self.opreturn_rawhex_container.setVisible(True)
         self.opreturn_label.setVisible(True)
 
         # Prevent user from modifying required fields, and hide what we

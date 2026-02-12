@@ -46,7 +46,7 @@ from electroncash_gui.qt.amountedit import BTCAmountEdit
 from electroncash_gui.qt.main_window import ElectrumWindow, StatusBarButton
 from electroncash_gui.qt.popup_widget import ShowPopupLabel, KillPopupLabel
 from electroncash_gui.qt.util import (
-    Buttons, CancelButton, CloseButton, ColorScheme, OkButton, WaitingDialog, WindowModalDialog)
+    Buttons, CancelButton, CloseButton, ColorScheme, HelpLabel, OkButton, WaitingDialog, WindowModalDialog)
 from electroncash_gui.qt.utils import PortValidator, UserPortValidator
 
 from .conf import Conf, Global
@@ -173,15 +173,15 @@ class Plugin(FusionPlugin, QObject):
             label = ngettext("Spend only fused coins, minimum {min} fusion",
                              "Spend only fused coins, minimum {min} fusions",
                              fuse_depth).format(min=fuse_depth)
-            tooltip = ngettext("If checked, only spend coins that have been anonymized by\n"
-                               "CashFusion, after having been fused at least {min} time.",
-                               "If checked, only spend coins that have been anonymized by\n"
-                               "CashFusion, after having been fused at least {min} times.",
-                               fuse_depth).format(min=fuse_depth)
         else:
             label = _("Spend only fused coins")
-            tooltip = _("If checked, only spend coins that have been\n"
-                        "anonymized by CashFusion at least once.")
+        tooltip = _("Spend only fused coins\n\n"
+                     "There will be times where not all of your coins have been anonymized "
+                     "by CashFusion. (CashFusion mixes your coins in groups over time. "
+                     "Newly received funds are unfused, and so is change from transactions "
+                     "you send.)\n\n"
+                     "Check this box to prevent your wallet from using these unfused coins "
+                     "when sending to maintain your privacy.")
         return label, tooltip
 
     @hook
@@ -210,24 +210,48 @@ class Plugin(FusionPlugin, QObject):
             # (if inter-wallet fusing is added, this should change.)
             return
 
-        # NEW! Set up the send tab "Spend only fused coins" checkbox/control
+        # Set up the send tab "Spend only fused coins" checkbox/control
+        # Uses a text-free QCheckBox (indicator only) + HelpLabel (click for help)
         if hasattr(window, 'send_tab_extra_plugin_controls_hbox'):
             hbox = window.send_tab_extra_plugin_controls_hbox
-            label, tooltip = self.get_spend_only_fused_coins_checkbox_attributes(wallet)
-            spend_only_fused_chk = QCheckBox(label)
-            spend_only_fused_chk.setObjectName('spend_only_fused_chk')
-            spend_only_fused_chk.setToolTip(tooltip)
-            hbox.insertWidget(0, spend_only_fused_chk)
-            spend_only_fused_chk.setChecked(Conf(wallet).spend_only_fused_coins)
+            label_text, tooltip = self.get_spend_only_fused_coins_checkbox_attributes(wallet)
+
+            container = QWidget()
+            container.setObjectName('spend_only_fused_chk')
+            container_layout = QHBoxLayout(container)
+            container_layout.setContentsMargins(0, 0, 0, 0)
+            container_layout.setSpacing(6)
+
+            chk = QCheckBox()
+            chk.setStyleSheet("QCheckBox::indicator { width: 26px; height: 26px; }")
+            chk.setChecked(Conf(wallet).spend_only_fused_coins)
+            container_layout.addWidget(chk)
+
+            help_lbl = HelpLabel(label_text, tooltip, custom_parent=window)
+            help_lbl.setObjectName('spend_only_fused_lbl')
+            help_lbl.setToolTip(tooltip)
+            container_layout.addWidget(help_lbl)
+
+            def update_label_color(checked, lbl=help_lbl):
+                if checked:
+                    lbl.setStyleSheet("font-size: 16px;")
+                else:
+                    lbl.setStyleSheet("font-size: 16px; color: red;")
+
             weak_window = weakref.ref(window)
             def on_chk(b):
-                window = weak_window()
-                if window:
-                    wallet = window.wallet
-                    Conf(wallet).spend_only_fused_coins = b
-                    window.do_update_fee()  # trigger send tab to re-calculate things
-            spend_only_fused_chk.toggled.connect(on_chk)
-            self.widgets.add(spend_only_fused_chk)
+                w = weak_window()
+                if w:
+                    wlt = w.wallet
+                    Conf(wlt).spend_only_fused_coins = b
+                    w.do_update_fee()
+                update_label_color(b)
+
+            chk.toggled.connect(on_chk)
+            update_label_color(chk.isChecked())
+
+            hbox.insertWidget(0, container)
+            self.widgets.add(container)
 
         want_autofuse = Conf(wallet).autofuse
         self.add_wallet(wallet, window.gui_object.get_cached_password(wallet))
@@ -1483,11 +1507,14 @@ class WalletSettingsDialog(WindowModalDialog):
         # update the send tab label for the "spend only confirmed coins" checkbox
         main_window = self.wallet.weak_window and self.wallet.weak_window()
         if main_window:
-            chk = main_window.findChild(QCheckBox, 'spend_only_fused_chk', Qt.FindChildrenRecursively)
-            if chk:
-                label, tooltip = self.plugin.get_spend_only_fused_coins_checkbox_attributes(self.wallet)
-                chk.setText(label)
-                chk.setToolTip(tooltip)
+            container = main_window.findChild(QWidget, 'spend_only_fused_chk', Qt.FindChildrenRecursively)
+            if container:
+                label_text, tooltip = self.plugin.get_spend_only_fused_coins_checkbox_attributes(self.wallet)
+                help_lbl = container.findChild(QLabel, 'spend_only_fused_lbl')
+                if help_lbl:
+                    help_lbl.setText(label_text)
+                    help_lbl.setToolTip(tooltip)
+                    help_lbl.help_text = tooltip
             # Coins tab may need redisplay if we changed these settings
             if prevval != newval:
                 main_window.utxo_list.update()

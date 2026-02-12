@@ -74,7 +74,7 @@ class HistoryList(MyTreeWidget, PrintError):
         self.cleaned_up = True
 
     def refresh_headers(self):
-        headers = ['', '', _('Date'), _('Description') , _('Amount'), _('Balance')]
+        headers = [_('Conf.'), '', _('Date'), _('Description') , _('Amount'), _('Balance')]
         fx = self.parent.fx
         if fx and fx.show_history():
             headers.extend(['%s '%fx.ccy + _('Amount'), '%s '%fx.ccy + _('Balance')])
@@ -144,17 +144,16 @@ class HistoryList(MyTreeWidget, PrintError):
                 self.has_unknown_balances = True
             status, status_str = self.wallet.get_tx_status(tx_hash, height, conf, timestamp)
             has_invoice = self.wallet.invoices.paid.get(tx_hash)
-            icon = self.get_icon_for_status(status)
+            conf_text = str(max(conf, 0)) if conf <= 9 else "9+"
             v_str = self.parent.format_amount(value, True, whitespaces=True)
             balance_str = self.parent.format_amount(balance, whitespaces=True)
-            entry = ['', tx_hash, status_str, label, v_str, balance_str]
+            entry = [conf_text, tx_hash, status_str, label, v_str, balance_str]
             if fx and fx.show_history():
                 date = timestamp_to_datetime(time.time() if conf <= 0 else timestamp)
                 for amount in [value, balance]:
                     text = fx.historical_value_str(amount, date)
                     entry.append(text)
             item = SortableTreeWidgetItem(entry)
-            if icon: item.setIcon(0, icon)
             item.setToolTip(0, str(conf) + " confirmation" + ("s" if conf != 1 else ""))
             item.setData(0, SortableTreeWidgetItem.DataRole, (status, conf))
             if has_invoice:
@@ -233,8 +232,9 @@ class HistoryList(MyTreeWidget, PrintError):
                 was_cur = self.currentItem() is item
                 self.invisibleRootItem().takeChild(idx)
             status, status_str = self.wallet.get_tx_status(tx_hash, height, conf, timestamp)
-            icon = self.get_icon_for_status(status)
-            if icon: item.setIcon(0, icon)
+            conf_text = str(max(conf, 0)) if conf <= 9 else "9+"
+            item.setText(0, conf_text)
+            item.setToolTip(0, str(conf) + " confirmation" + ("s" if conf != 1 else ""))
             item.setData(0, SortableTreeWidgetItem.DataRole, (status, conf))
             item.setText(2, status_str)
             if idx > -1:

@@ -76,5 +76,7 @@
     <file>icons/unpaid.svg</file>
     <file>icons/unlock.svg</file>
     <file>icons/warning.png</file>
+    <file>icons/bidi_arrow.png</file>
+    <file>icons/bidirectional_arrows_darkmode.png</file>
   </qresource>
 </RCC>

@@ -112,19 +112,11 @@ class HelpLabel(HelpMixin, QLabel):
         HelpMixin.__init__(self, help_text, custom_parent=custom_parent)
         self.setCursor(QCursor(Qt.PointingHandCursor))
         self.font = self.font()
+        self.font.setUnderline(True)
+        self.setFont(self.font)
 
     def mouseReleaseEvent(self, x):
         self.show_help()
-
-    def enterEvent(self, event):
-        self.font.setUnderline(True)
-        self.setFont(self.font)
-        return QLabel.enterEvent(self, event)
-
-    def leaveEvent(self, event):
-        self.font.setUnderline(False)
-        self.setFont(self.font)
-        return QLabel.leaveEvent(self, event)
 
 class HelpButton(HelpMixin, QPushButton):
     def __init__(self, text, *, button_text='?', fixed_size=True, icon=None,
@@ -612,6 +604,8 @@ class MyTreeWidget(QTreeWidget):
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(create_menu)
         self.setUniformRowHeights(True)
+        self.setAlternatingRowColors(True)
+        self.setRootIsDecorated(False)
         # extend the syntax for consistency
         self.addChild = self.addTopLevelItem
         self.insertChild = self.insertTopLevelItem

@@ -33,6 +33,18 @@ QComboBox::item:checked {
     font-weight: bold;
     max-height: 30px;
 }
+/* qdarkstyle sets alternate-background-color identical to background (#19232D),
+   making alternating row colors invisible. Override with a visible darker shade. */
+QAbstractItemView {
+    alternate-background-color: #111820;
+}
+/* Vertical lines between columns in tree/list views */
+QTreeView::item {
+    border-right: 1px solid #455364;
+}
+QHeaderView::section::horizontal {
+    border-right: 1px solid #455364;
+}
 '''
 
 def patch(use_dark_theme: bool = False, darkstyle_ver: tuple = None):
