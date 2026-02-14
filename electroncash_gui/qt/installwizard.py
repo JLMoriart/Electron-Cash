@@ -1,4 +1,5 @@
 # -*- mode: python3 -*-
+import datetime
 import os
 import random
 import sys
@@ -14,7 +15,7 @@ from PyQt5.QtWidgets import *
 
 from electroncash import keystore, Wallet, WalletStorage
 from electroncash.network import Network
-from electroncash.util import UserCancelled, InvalidPassword, finalization_print_error, TimeoutException
+from electroncash.util import UserCancelled, InvalidPassword, finalization_print_error, TimeoutException, get_new_wallet_name
 from electroncash.base_wizard import BaseWizard
 from electroncash.i18n import _
 from electroncash.wallet import Standard_Wallet
@@ -107,19 +108,23 @@ class InstallWizard(QDialog, MessageBoxMixin, BaseWizard):
     def __init__(self, config, app, plugins, storage):
         BaseWizard.__init__(self, config, storage)
         QDialog.__init__(self, None)
-        self.setWindowTitle('Electron Cash  -  ' + _('Install Wizard'))
+        self.setWindowTitle('Electron Cash  -  ' + _('Startup Wizard'))
         self.app = app
         self.config = config
         # Set for base base class
         self.plugins = plugins
-        self.setMinimumSize(600, 400)
+        self.setMinimumSize(900, 600)
         self.accept_signal.connect(self.accept)
         self.title = QLabel()
+        self.title.setStyleSheet("font-size: 14px;")
         self.main_widget = QWidget()
         self.back_button = QPushButton(_("Back"), self)
         self.back_button.setText(_('Back') if self.can_go_back() else _('Cancel'))
         self.next_button = QPushButton(_("Next"), self)
         self.next_button.setDefault(True)
+        btn_style = "font-size: 24px; padding: 8px 24px;"
+        self.back_button.setStyleSheet(btn_style)
+        self.next_button.setStyleSheet(btn_style)
         self.logo = QLabel()
         self.please_wait = QLabel(_("Please wait..."))
         self.please_wait.setAlignment(Qt.AlignCenter)
@@ -131,10 +136,8 @@ class InstallWizard(QDialog, MessageBoxMixin, BaseWizard):
         outer_vbox = QVBoxLayout(self)
         inner_vbox = QVBoxLayout()
         inner_vbox.addWidget(self.title)
-        inner_vbox.addWidget(self.main_widget)
-        inner_vbox.addStretch(1)
+        inner_vbox.addWidget(self.main_widget, 1)  # stretch factor so content fills space
         inner_vbox.addWidget(self.please_wait)
-        inner_vbox.addStretch(1)
         scroll_widget = QWidget()
         scroll_widget.setLayout(inner_vbox)
         scroll = QScrollArea()
@@ -150,7 +153,23 @@ class InstallWizard(QDialog, MessageBoxMixin, BaseWizard):
         hbox.addWidget(scroll)
         hbox.setStretchFactor(scroll, 1)
         outer_vbox.addLayout(hbox)
-        outer_vbox.addLayout(Buttons(self.back_button, self.next_button))
+        self.create_wallet_button = QPushButton(_('Create New Wallet'))
+        self.create_wallet_button.setStyleSheet("font-size: 20px; padding: 8px 24px;")
+        self.create_wallet_button.hide()
+        self.import_seed_button = QPushButton(_('Import Seed Phrase'))
+        self.import_seed_button.setStyleSheet("font-size: 20px; padding: 8px 24px;")
+        self.import_seed_button.hide()
+        self.setup_hw_button = QPushButton(_('Set Up Hardware Wallet'))
+        self.setup_hw_button.setStyleSheet("font-size: 20px; padding: 8px 24px;")
+        self.setup_hw_button.hide()
+        self.button_hbox = QHBoxLayout()
+        self.button_hbox.addWidget(self.create_wallet_button)
+        self.button_hbox.addWidget(self.import_seed_button)
+        self.button_hbox.addWidget(self.setup_hw_button)
+        self.button_hbox.addStretch(1)
+        self.button_hbox.addWidget(self.back_button)
+        self.button_hbox.addWidget(self.next_button)
+        outer_vbox.addLayout(self.button_hbox)
         self.set_icon(':icons/electron-cash.svg')
         self.show()
         self.raise_()
@@ -158,36 +177,50 @@ class InstallWizard(QDialog, MessageBoxMixin, BaseWizard):
         # Track object lifecycle
         finalization_print_error(self)
 
-    def run_and_get_wallet(self):
-
+    def _build_wallet_selection_page(self, wallet_folder, create_new_requested, import_seed_requested, setup_hw_requested):
+        """Build (or rebuild) the wallet selection page layout and widgets.
+        Returns the layout. All child widgets are recreated fresh each time
+        so the layout can safely be discarded and rebuilt."""
         vbox = QVBoxLayout()
-        hbox = QHBoxLayout()
-        hbox.addWidget(QLabel(_('Wallet') + ':'))
-        self.name_e = QLineEdit()
-        hbox.addWidget(self.name_e)
-        button = QPushButton(_('Choose...'))
-        hbox.addWidget(button)
-        vbox.addLayout(hbox)
+
+        # Wallet browser list
+        wallet_list = QTreeWidget()
+        wallet_list.setHeaderLabels([_('Name'), _('Last Modified')])
+        wallet_list.setRootIsDecorated(False)
+        wallet_list.setSelectionMode(QAbstractItemView.SingleSelection)
+        wallet_list.setAlternatingRowColors(True)
+        wallet_list.header().setStretchLastSection(True)
+        vbox.addWidget(wallet_list, 1)  # stretch factor 1 so it fills available space
+
+        # Populate wallet browser
+        for fname in sorted(os.listdir(wallet_folder)):
+            fpath = os.path.join(wallet_folder, fname)
+            if os.path.isfile(fpath):
+                mtime = os.path.getmtime(fpath)
+                mtime_str = datetime.datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M')
+                item = QTreeWidgetItem([fname, mtime_str])
+                wallet_list.addTopLevelItem(item)
+        wallet_list.sortByColumn(1, Qt.DescendingOrder)  # most recent first
+        wallet_list.header().resizeSections(QHeaderView.ResizeToContents)
 
         self.msg_label = QLabel('')
+        self.msg_label.setStyleSheet("font-size: 14px;")
         vbox.addWidget(self.msg_label)
-        hbox2 = QHBoxLayout()
+
+        self._wallet_btn_hbox = QHBoxLayout()
         self.pw_e = QLineEdit('', self)
         self.pw_e.setFixedWidth(150)
         self.pw_e.setEchoMode(2)
         self.pw_label = QLabel(_('Password') + ':')
-        hbox2.addWidget(self.pw_label)
-        hbox2.addWidget(self.pw_e)
-        hbox2.addStretch()
-        vbox.addLayout(hbox2)
-        self.set_layout(vbox, title=_('Electron Cash wallet'))
+        self._wallet_btn_hbox.addWidget(self.pw_label)
+        self._wallet_btn_hbox.addWidget(self.pw_e)
+        self._wallet_btn_hbox.addStretch()
+        vbox.addLayout(self._wallet_btn_hbox)
 
-        wallet_folder = os.path.dirname(self.storage.path)
-
-        def on_choose():
-            path, __ = QFileDialog.getOpenFileName(self, _("Select your wallet file"), wallet_folder)
-            if path:
-                self.name_e.setText(path)
+        # Hidden name_e — still used internally by on_filename / storage logic
+        self.name_e = QLineEdit()
+        self.name_e.hide()
+        vbox.addWidget(self.name_e)
 
         def on_filename(filename):
             path = os.path.join(wallet_folder, filename)
@@ -198,11 +231,7 @@ class InstallWizard(QDialog, MessageBoxMixin, BaseWizard):
                 self.storage = None
                 self.next_button.setEnabled(False)
             if self.storage:
-                if not self.storage.file_exists():
-                    msg =_("This file does not exist.") + '\n' \
-                          + _("Press 'Next' to create this wallet, or choose another file.")
-                    pw = False
-                elif self.storage.file_exists() and self.storage.is_encrypted():
+                if self.storage.file_exists() and self.storage.is_encrypted():
                     msg = _("This file is encrypted.") + '\n' + _('Enter your password or choose another file.')
                     pw = True
                 else:
@@ -220,17 +249,120 @@ class InstallWizard(QDialog, MessageBoxMixin, BaseWizard):
                 self.pw_label.hide()
                 self.pw_e.hide()
 
-        button.clicked.connect(on_choose)
+        def on_wallet_selected():
+            items = wallet_list.selectedItems()
+            if items:
+                self.name_e.setText(items[0].text(0))
+
+        def on_create_new():
+            create_new_requested[0] = True
+            self.loop.exit(2)  # kick the while loop
+
         self.name_e.textChanged.connect(on_filename)
-        n = os.path.basename(self.storage.path)
-        self.name_e.setText(n)
+        wallet_list.itemSelectionChanged.connect(on_wallet_selected)
+        # Disconnect any prior connections to avoid duplicate signals on rebuild
+        try:
+            self.create_wallet_button.clicked.disconnect()
+        except TypeError:
+            pass  # no prior connections
+        self.create_wallet_button.clicked.connect(on_create_new)
+        self.create_wallet_button.show()
+
+        def on_import_seed():
+            import_seed_requested[0] = True
+            self.loop.exit(2)
+
+        try:
+            self.import_seed_button.clicked.disconnect()
+        except TypeError:
+            pass  # no prior connections
+        self.import_seed_button.clicked.connect(on_import_seed)
+        self.import_seed_button.show()
+
+        def on_setup_hw():
+            setup_hw_requested[0] = True
+            self.loop.exit(2)
+
+        try:
+            self.setup_hw_button.clicked.disconnect()
+        except TypeError:
+            pass  # no prior connections
+        self.setup_hw_button.clicked.connect(on_setup_hw)
+        self.setup_hw_button.show()
+
+        self.pw_label.hide()
+        self.pw_e.hide()
+        self.back_button.setText(_('Cancel'))
+
+        # set_layout restores buttons to the permanent bar first, then sets
+        # the layout.  After that we move Cancel/Next into the content area.
+        self.set_layout(vbox, title=_('Electron Cash wallet'), next_enabled=False)
+        # Move Cancel/Next buttons into the content row (after set_layout
+        # so they survive the old layout teardown).
+        self._wallet_btn_hbox.addWidget(self.back_button)
+        self._wallet_btn_hbox.addWidget(self.next_button)
+        self.back_button.show()
+        self.next_button.show()
+
+        # Pre-select the wallet matching self.storage.path (e.g. when
+        # opened via File → Open Recent), falling back to the most recent.
+        if wallet_list.topLevelItemCount() > 0:
+            target_name = os.path.basename(self.storage.path)
+            matched = wallet_list.findItems(target_name, Qt.MatchExactly, 0)
+            if matched:
+                wallet_list.setCurrentItem(matched[0])
+            else:
+                wallet_list.setCurrentItem(wallet_list.topLevelItem(0))
+
+    def run_and_get_wallet(self):
+
+        wallet_folder = os.path.dirname(self.storage.path)
+        create_new_requested = [False]
+        import_seed_requested = [False]
+        setup_hw_requested = [False]
+
+        self._build_wallet_selection_page(wallet_folder, create_new_requested, import_seed_requested, setup_hw_requested)
 
         while True:
             password = None
-            if self.storage.file_exists() and not self.storage.is_encrypted():
-                break
             if self.loop.exec_() != 2:  # 2 = next
                 return
+
+            # --- Handle "Create New Wallet" button ---
+            if create_new_requested[0]:
+                create_new_requested[0] = False
+                self.stack = []
+                self.run('create_new_wallet', wallet_folder)
+                if self.wallet:
+                    return self.wallet, None
+                # User went back from naming page or cancelled —
+                # rebuild the wallet selection page from scratch
+                # (the old layout was destroyed when set_layout replaced it)
+                self._build_wallet_selection_page(wallet_folder, create_new_requested, import_seed_requested, setup_hw_requested)
+                continue
+
+            # --- Handle "Import Seed Phrase" button ---
+            if import_seed_requested[0]:
+                import_seed_requested[0] = False
+                self.stack = []
+                self.run('import_wallet_from_seed', wallet_folder)
+                if self.wallet:
+                    return self.wallet, None
+                self._build_wallet_selection_page(wallet_folder, create_new_requested, import_seed_requested, setup_hw_requested)
+                continue
+
+            # --- Handle "Set Up Hardware Wallet" button ---
+            if setup_hw_requested[0]:
+                setup_hw_requested[0] = False
+                self.stack = []
+                self.run('setup_hardware_wallet', wallet_folder)
+                if self.wallet:
+                    return self.wallet, None
+                self._build_wallet_selection_page(wallet_folder, create_new_requested, import_seed_requested, setup_hw_requested)
+                continue
+
+            if self.storage.file_exists() and not self.storage.is_encrypted():
+                break
             if not self.storage.file_exists():
                 break
             if self.storage.file_exists() and self.storage.is_encrypted():
@@ -245,6 +377,10 @@ class InstallWizard(QDialog, MessageBoxMixin, BaseWizard):
                     traceback.print_exc(file=sys.stdout)
                     QMessageBox.information(None, _('Error'), str(e))
                     return
+
+        self.create_wallet_button.hide()
+        self.import_seed_button.hide()
+        self.setup_hw_button.hide()
 
         path = self.storage.path
         if self.storage.requires_split():
@@ -270,7 +406,7 @@ class InstallWizard(QDialog, MessageBoxMixin, BaseWizard):
             return self.wallet, password
 
         action = self.storage.get_action()
-        if action and action != 'new':
+        if action:
             self.hide()
             msg = _("The file '{}' contains an incompletely created wallet.\n"
                     "Do you want to complete its creation now?").format(path)
@@ -280,7 +416,6 @@ class InstallWizard(QDialog, MessageBoxMixin, BaseWizard):
                     self.show_warning(_('The file was removed'))
                 return
             self.show()
-        if action:
             # self.wallet is set in run
             self.run(action)
             return self.wallet, password
@@ -292,6 +427,187 @@ class InstallWizard(QDialog, MessageBoxMixin, BaseWizard):
         """Called in hardware client wrapper, in order to close popups."""
         return
 
+    def create_new_wallet(self, wallet_folder):
+        """Stack entry for the create-new-wallet flow.
+        Called via self.run('create_new_wallet', wallet_folder).
+        Sets up run_next callback and shows the naming dialog."""
+        def on_wallet_named(wallet_name):
+            if not wallet_name:
+                return
+            path = os.path.join(wallet_folder, wallet_name)
+            try:
+                self.storage = WalletStorage(path, manual_upgrades=True)
+            except IOError:
+                return
+            self.wallet_type = 'standard'
+            self.run('create_standard_seed')
+        self.create_wallet_name_dialog(run_next=on_wallet_named,
+                                       wallet_folder=wallet_folder)
+
+    @wizard_dialog
+    def create_wallet_name_dialog(self, run_next, wallet_folder):
+        create_vbox = QVBoxLayout()
+        create_style = "font-size: 14px;"
+        name_label = QLabel(_('Enter a name for your wallet:'))
+        name_label.setStyleSheet(create_style)
+        create_vbox.addWidget(name_label)
+        name_input = QLineEdit()
+        name_input.setPlaceholderText(_('Wallet name'))
+        name_input.setText(get_new_wallet_name(wallet_folder))
+        name_input.setStyleSheet(create_style)
+        create_vbox.addWidget(name_input)
+        create_vbox.addSpacing(10)
+        msg1 = QLabel(_("Next, you will be shown your new wallet's automatically "
+                        "generated <i>seed words</i>."))
+        msg1.setWordWrap(True)
+        msg1.setStyleSheet(create_style)
+        create_vbox.addWidget(msg1)
+        msg2 = QLabel(_("These words are a backup of your wallet, and must be "
+                        "kept secret."))
+        msg2.setWordWrap(True)
+        msg2.setStyleSheet(create_style)
+        create_vbox.addWidget(msg2)
+        msg3 = QLabel(_("<b>Before continuing, make sure you are somewhere "
+                        "private.</b>"))
+        msg3.setWordWrap(True)
+        msg3.setStyleSheet(create_style)
+        create_vbox.addWidget(msg3)
+        create_vbox.addStretch(1)
+        self.create_wallet_button.hide()
+        self.import_seed_button.hide()
+        self.setup_hw_button.hide()
+        self.next_button.setText(_('Continue'))
+        self.back_button.setText(_('Back'))
+        # Use manual loop so Back raises UserCancelled (returns to wallet
+        # selection) instead of GoBack (which would close the wizard since
+        # there's nothing before this on the stack).
+        self.set_layout(create_vbox, title=_('Create Wallet'))
+        while True:
+            result = self.loop.exec_()
+            if not result or result == 1:  # close or Back
+                raise UserCancelled
+            break  # result == 2 (Continue)
+        self.title.setVisible(False)
+        self.back_button.setEnabled(False)
+        self.next_button.setEnabled(False)
+        self.main_widget.setVisible(False)
+        self.please_wait.setVisible(True)
+        self.refresh_gui()
+        self.next_button.setText(_('Next'))
+        return name_input.text().strip()
+
+    def import_wallet_from_seed(self, wallet_folder):
+        """Stack entry for the import-seed-phrase flow.
+        Called via self.run('import_wallet_from_seed', wallet_folder).
+        Shows the naming dialog then enters restore_from_seed."""
+        def on_wallet_named(wallet_name):
+            if not wallet_name:
+                return
+            path = os.path.join(wallet_folder, wallet_name)
+            try:
+                self.storage = WalletStorage(path, manual_upgrades=True)
+            except IOError:
+                return
+            self.wallet_type = 'standard'
+            self.run('restore_from_seed')
+        self.import_wallet_name_dialog(run_next=on_wallet_named,
+                                       wallet_folder=wallet_folder)
+
+    @wizard_dialog
+    def import_wallet_name_dialog(self, run_next, wallet_folder):
+        create_vbox = QVBoxLayout()
+        create_style = "font-size: 14px;"
+        name_label = QLabel(_('Enter a name for your wallet:'))
+        name_label.setStyleSheet(create_style)
+        create_vbox.addWidget(name_label)
+        name_input = QLineEdit()
+        name_input.setPlaceholderText(_('Wallet name'))
+        name_input.setText(get_new_wallet_name(wallet_folder))
+        name_input.setStyleSheet(create_style)
+        create_vbox.addWidget(name_input)
+        create_vbox.addSpacing(10)
+        msg1 = QLabel(_("Next, you will be asked to enter your existing "
+                         "<i>seed words</i> to restore your wallet."))
+        msg1.setWordWrap(True)
+        msg1.setStyleSheet(create_style)
+        create_vbox.addWidget(msg1)
+        create_vbox.addStretch(1)
+        self.create_wallet_button.hide()
+        self.import_seed_button.hide()
+        self.setup_hw_button.hide()
+        self.next_button.setText(_('Continue'))
+        self.back_button.setText(_('Back'))
+        self.set_layout(create_vbox, title=_('Import Wallet'))
+        while True:
+            result = self.loop.exec_()
+            if not result or result == 1:  # close or Back
+                raise UserCancelled
+            break  # result == 2 (Continue)
+        self.title.setVisible(False)
+        self.back_button.setEnabled(False)
+        self.next_button.setEnabled(False)
+        self.main_widget.setVisible(False)
+        self.please_wait.setVisible(True)
+        self.refresh_gui()
+        self.next_button.setText(_('Next'))
+        return name_input.text().strip()
+
+    def setup_hardware_wallet(self, wallet_folder):
+        """Stack entry for the setup-hardware-wallet flow.
+        Called via self.run('setup_hardware_wallet', wallet_folder).
+        Shows the naming dialog then enters choose_hw_device."""
+        def on_wallet_named(wallet_name):
+            if not wallet_name:
+                return
+            path = os.path.join(wallet_folder, wallet_name)
+            try:
+                self.storage = WalletStorage(path, manual_upgrades=True)
+            except IOError:
+                return
+            self.wallet_type = 'standard'
+            self.run('choose_hw_device')
+        self.setup_hw_wallet_name_dialog(run_next=on_wallet_named,
+                                         wallet_folder=wallet_folder)
+
+    @wizard_dialog
+    def setup_hw_wallet_name_dialog(self, run_next, wallet_folder):
+        create_vbox = QVBoxLayout()
+        create_style = "font-size: 14px;"
+        name_label = QLabel(_('Enter a name for your wallet:'))
+        name_label.setStyleSheet(create_style)
+        create_vbox.addWidget(name_label)
+        name_input = QLineEdit()
+        name_input.setPlaceholderText(_('Wallet name'))
+        name_input.setText(get_new_wallet_name(wallet_folder))
+        name_input.setStyleSheet(create_style)
+        create_vbox.addWidget(name_input)
+        create_vbox.addSpacing(10)
+        msg1 = QLabel(_("Next, you will be asked to connect and select "
+                         "your hardware wallet device."))
+        msg1.setWordWrap(True)
+        msg1.setStyleSheet(create_style)
+        create_vbox.addWidget(msg1)
+        create_vbox.addStretch(1)
+        self.create_wallet_button.hide()
+        self.import_seed_button.hide()
+        self.setup_hw_button.hide()
+        self.next_button.setText(_('Continue'))
+        self.back_button.setText(_('Back'))
+        self.set_layout(create_vbox, title=_('Set Up Hardware Wallet'))
+        while True:
+            result = self.loop.exec_()
+            if not result or result == 1:  # close or Back
+                raise UserCancelled
+            break  # result == 2 (Continue)
+        self.title.setVisible(False)
+        self.back_button.setEnabled(False)
+        self.next_button.setEnabled(False)
+        self.main_widget.setVisible(False)
+        self.please_wait.setVisible(True)
+        self.refresh_gui()
+        self.next_button.setText(_('Next'))
+        return name_input.text().strip()
+
     def on_error(self, exc_info):
         if not isinstance(exc_info[1], UserCancelled):
             traceback.print_exception(*exc_info)
@@ -302,9 +618,33 @@ class InstallWizard(QDialog, MessageBoxMixin, BaseWizard):
         self.logo.setPixmap(QIcon(filename).pixmap(60))
         return prior_filename
 
+    def _restore_button_bar(self):
+        """Rescue persistent buttons back to the permanent button bar.
+        Called before destroying a content layout that may contain them."""
+        # Reparent to self so they survive the old layout being destroyed
+        for btn in (self.back_button, self.next_button, self.create_wallet_button, self.import_seed_button, self.setup_hw_button):
+            btn.setParent(self)
+        # Clear old items from button_hbox
+        while self.button_hbox.count():
+            item = self.button_hbox.takeAt(0)
+            # Delete spacer items (stretches), but not widget items
+            if not item.widget():
+                del item
+        # Rebuild the permanent button bar
+        self.button_hbox.addWidget(self.create_wallet_button)
+        self.button_hbox.addWidget(self.import_seed_button)
+        self.button_hbox.addWidget(self.setup_hw_button)
+        self.button_hbox.addStretch(1)
+        self.button_hbox.addWidget(self.back_button)
+        self.button_hbox.addWidget(self.next_button)
+
     def set_layout(self, layout, title=None, next_enabled=True):
         self.title.setText("<b>%s</b>"%title if title else "")
         self.title.setVisible(bool(title))
+        # Rescue persistent buttons before destroying old layout — they may
+        # have been temporarily placed inside the content area (e.g. wallet
+        # selection page) and would be destroyed along with the old layout.
+        self._restore_button_bar()
         # Get rid of any prior layout by assigning it to a temporary widget
         prior_layout = self.main_widget.layout()
         if prior_layout:
@@ -375,46 +715,537 @@ class InstallWizard(QDialog, MessageBoxMixin, BaseWizard):
 
     @wizard_dialog
     def restore_seed_dialog(self, run_next, test):
+        from electroncash import mnemonic as mn
+        mnemo = mn.Mnemonic('en')
+
         options = []
         if self.opt_ext:
             options.append('ext')
         if self.opt_bip39:
             options.append('bip39')
-        title = _('Enter Seed')
-        message = _('Please enter your seed phrase in order to restore your wallet.')
-        return self.seed_input(title, message, test, options)
+
+        vbox = QVBoxLayout()
+        words_count = 12
+
+        # Message label at 14px
+        msg_label = QLabel(_('Please enter your seed phrase in order to restore your wallet.'))
+        msg_label.setStyleSheet("font-size: 14px;")
+        msg_label.setWordWrap(True)
+        vbox.addWidget(msg_label)
+
+        # Subtitle
+        subtitle = QLabel(_('Hit spacebar to move to next word'))
+        subtitle.setStyleSheet("font-size: 13px; color: gray;")
+        subtitle.setAlignment(Qt.AlignCenter)
+        vbox.addWidget(subtitle)
+
+        # Grid
+        grid = QGridLayout()
+        grid.setSpacing(8)
+
+        # Card/input styles (same as confirm_seed_dialog)
+        if ColorScheme.dark_scheme:
+            card_style = "QFrame { border: 1px solid #555; border-radius: 8px; background: #3a3a3a; padding: 4px; }"
+            num_color = "#6ea8d9"
+            input_style = "QLineEdit { font-size: 20px; border: 1px solid #555; border-radius: 4px; background: transparent; color: white; padding: 2px; }"
+            error_input_style = "QLineEdit { font-size: 20px; border: 1px solid #555; border-radius: 4px; background: #5a2a2a; color: white; padding: 2px; }"
+        else:
+            card_style = "QFrame { border: 1px solid #ccc; border-radius: 8px; background: white; padding: 4px; }"
+            num_color = "#5b9bd5"
+            input_style = "QLineEdit { font-size: 20px; border: 1px solid #ccc; border-radius: 4px; background: transparent; padding: 2px; }"
+            error_input_style = "QLineEdit { font-size: 20px; border: 1px solid #ccc; border-radius: 4px; background: #ffcccc; padding: 2px; }"
+
+        # SeedInputFilter — spacebar advances to next input, focus-out
+        # validates word against BIP39 dictionary.
+        class SeedInputFilter(QObject):
+            def __init__(self, inputs, wordlist_indices,
+                         normal_style, error_style):
+                super().__init__()
+                self.inputs = inputs
+                self.wordlist_indices = wordlist_indices
+                self.normal_style = normal_style
+                self.error_style = error_style
+
+            def eventFilter(self, obj, event):
+                if (event.type() == QEvent.KeyPress
+                        and event.key() == Qt.Key_Space):
+                    try:
+                        idx = self.inputs.index(obj)
+                    except ValueError:
+                        return False
+                    if idx < len(self.inputs) - 1:
+                        self.inputs[idx + 1].setFocus()
+                    return True  # consume the space character
+                if event.type() == QEvent.FocusOut:
+                    word = obj.text().strip().lower()
+                    if word and word not in self.wordlist_indices:
+                        obj.setStyleSheet(self.error_style)
+                    else:
+                        obj.setStyleSheet(self.normal_style)
+                return False
+
+        inputs = []
+        seed_filter = SeedInputFilter(inputs, mnemo.wordlist_indices,
+                                      input_style, error_input_style)
+
+        # Build 12 cards (2 rows × 6 cols)
+        for i in range(words_count):
+            row = i // 6
+            col = i % 6
+
+            frame = QFrame()
+            frame.setStyleSheet(card_style)
+            frame_layout = QVBoxLayout(frame)
+            frame_layout.setContentsMargins(6, 4, 6, 8)
+            frame_layout.setSpacing(0)
+
+            num_label = QLabel(str(i + 1))
+            num_label.setStyleSheet(f"color: {num_color}; font-size: 20px; border: none; background: transparent;")
+            num_label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+
+            word_input = QLineEdit()
+            word_input.setStyleSheet(input_style)
+            word_input.setAlignment(Qt.AlignCenter)
+            word_input.installEventFilter(seed_filter)
+
+            frame_layout.addWidget(num_label)
+            frame_layout.addWidget(word_input)
+
+            grid.addWidget(frame, row, col)
+            inputs.append(word_input)
+
+        vbox.addLayout(grid)
+
+        # Mutable state for options
+        is_bip39 = [False]
+        is_ext = [False]
+        saved_test = test  # original validation function
+
+        # Seed type label
+        seed_type_label = QLabel('')
+        seed_type_label.setStyleSheet("font-size: 12px;")
+
+        # Validation handler (called on every text change)
+        def validate_seed():
+            entered = ' '.join(inp.text().strip().lower()
+                               for inp in inputs)
+            current_test = ((lambda x: bool(x)) if is_bip39[0]
+                            else saved_test)
+            valid = bool(current_test(entered))
+            self.next_button.setEnabled(valid)
+            # Update seed type label
+            if not is_bip39[0]:
+                t = mn.format_seed_type_name_for_ui(
+                    mn.seed_type_name(entered))
+                seed_type_label.setText(
+                    (_('Seed Type') + ': ' + t) if t else '')
+            else:
+                is_checksum, is_wordlist = mnemo.is_checksum_valid(
+                    entered)
+                status = (('checksum: '
+                           + ('ok' if is_checksum else 'failed'))
+                          if is_wordlist else 'unknown wordlist')
+                seed_type_label.setText('BIP39 (%s)' % status)
+
+        # Per-input text change handlers (paste distribution +
+        # validation)
+        def make_handler(idx):
+            def handler(text):
+                words = text.strip().split()
+                if len(words) > 1:
+                    for j, w in enumerate(words):
+                        target = idx + j
+                        if target < len(inputs):
+                            inputs[target].blockSignals(True)
+                            inputs[target].setText(w.lower())
+                            inputs[target].blockSignals(False)
+                    next_focus = min(idx + len(words),
+                                     len(inputs) - 1)
+                    inputs[next_focus].setFocus()
+                validate_seed()
+            return handler
+
+        for i, inp in enumerate(inputs):
+            inp.textChanged.connect(make_handler(i))
+
+        # Options button + seed type label row
+        hbox = QHBoxLayout()
+        hbox.addStretch(1)
+        hbox.addWidget(seed_type_label)
+        if options:
+            def open_options():
+                dialog = QDialog(self)
+                dvbox = QVBoxLayout(dialog)
+                cb_ext = cb_bip39 = None
+                if 'ext' in options:
+                    cb_ext = QCheckBox(
+                        _('Extend this seed with custom words')
+                        + " " + _("(aka 'passphrase')"))
+                    cb_ext.setChecked(is_ext[0])
+                    dvbox.addWidget(cb_ext)
+                if 'bip39' in options:
+                    cb_bip39 = QCheckBox(
+                        _('Force BIP39 interpretation of this seed'))
+                    cb_bip39.setChecked(is_bip39[0])
+                    dvbox.addWidget(cb_bip39)
+                dvbox.addLayout(Buttons(OkButton(dialog)))
+                if not dialog.exec_():
+                    return
+                if cb_ext:
+                    is_ext[0] = cb_ext.isChecked()
+                if cb_bip39:
+                    is_bip39[0] = cb_bip39.isChecked()
+                validate_seed()  # re-validate with new options
+
+            opt_button = QPushButton(_('Options'))
+            opt_button.clicked.connect(open_options)
+            hbox.addWidget(opt_button)
+        vbox.addLayout(hbox)
+        vbox.addStretch(1)
+
+        self.exec_layout(vbox, title=_('Enter Seed'), next_enabled=False)
+
+        entered = ' '.join(inp.text().strip().lower() for inp in inputs)
+        return entered, is_bip39[0], is_ext[0]
 
     @wizard_dialog
     def confirm_seed_dialog(self, run_next, test):
         self.app.clipboard().clear()
-        title = _('Confirm Seed')
-        message = ' '.join([
-            _('Your seed is important!'),
-            _('If you lose your seed, your money will be permanently lost.'),
-            _('To make sure that you have properly saved your seed, please retype it here.')
-        ])
-        seed, is_bip39, is_ext = self.seed_input(title, message, test, None)
-        return seed
+        from electroncash import mnemonic as mn
+        mnemo = mn.Mnemonic('en')
+
+        vbox = QVBoxLayout()
+        words_count = 12
+
+        grid = QGridLayout()
+        grid.setSpacing(8)
+
+        if ColorScheme.dark_scheme:
+            card_style = "QFrame { border: 1px solid #555; border-radius: 8px; background: #3a3a3a; padding: 4px; }"
+            num_color = "#6ea8d9"
+            input_style = "QLineEdit { font-size: 20px; border: 1px solid #555; border-radius: 4px; background: transparent; color: white; padding: 2px; }"
+            error_input_style = "QLineEdit { font-size: 20px; border: 1px solid #555; border-radius: 4px; background: #5a2a2a; color: white; padding: 2px; }"
+        else:
+            card_style = "QFrame { border: 1px solid #ccc; border-radius: 8px; background: white; padding: 4px; }"
+            num_color = "#5b9bd5"
+            input_style = "QLineEdit { font-size: 20px; border: 1px solid #ccc; border-radius: 4px; background: transparent; padding: 2px; }"
+            error_input_style = "QLineEdit { font-size: 20px; border: 1px solid #ccc; border-radius: 4px; background: #ffcccc; padding: 2px; }"
+
+        confirm_greyed_style = "font-size: 24px; padding: 8px 24px; color: gray;"
+        confirm_active_style = "font-size: 24px; padding: 8px 24px;"
+        seed_confirmed = [False]
+
+        # Event filter: spacebar advances to next input, focus-out
+        # validates word against BIP39 dictionary.
+        class SeedInputFilter(QObject):
+            def __init__(self, inputs, wordlist_indices,
+                         normal_style, error_style):
+                super().__init__()
+                self.inputs = inputs
+                self.wordlist_indices = wordlist_indices
+                self.normal_style = normal_style
+                self.error_style = error_style
+
+            def eventFilter(self, obj, event):
+                if (event.type() == QEvent.KeyPress
+                        and event.key() == Qt.Key_Space):
+                    try:
+                        idx = self.inputs.index(obj)
+                    except ValueError:
+                        return False
+                    if idx < len(self.inputs) - 1:
+                        self.inputs[idx + 1].setFocus()
+                    return True  # consume the space character
+                if event.type() == QEvent.FocusOut:
+                    word = obj.text().strip().lower()
+                    if word and word not in self.wordlist_indices:
+                        obj.setStyleSheet(self.error_style)
+                    else:
+                        obj.setStyleSheet(self.normal_style)
+                return False
+
+        inputs = []
+        seed_filter = SeedInputFilter(inputs, mnemo.wordlist_indices,
+                                      input_style, error_input_style)
+        for i in range(words_count):
+            row = i // 6
+            col = i % 6
+
+            frame = QFrame()
+            frame.setStyleSheet(card_style)
+            frame_layout = QVBoxLayout(frame)
+            frame_layout.setContentsMargins(6, 4, 6, 8)
+            frame_layout.setSpacing(0)
+
+            num_label = QLabel(str(i + 1))
+            num_label.setStyleSheet(f"color: {num_color}; font-size: 20px; border: none; background: transparent;")
+            num_label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+
+            word_input = QLineEdit()
+            word_input.setStyleSheet(input_style)
+            word_input.setAlignment(Qt.AlignCenter)
+            word_input.installEventFilter(seed_filter)
+
+            frame_layout.addWidget(num_label)
+            frame_layout.addWidget(word_input)
+
+            # Match card sizes from the seed display page
+            if hasattr(self, '_seed_card_sizes') and i < len(self._seed_card_sizes):
+                frame.setMinimumSize(self._seed_card_sizes[i])
+
+            grid.addWidget(frame, row, col)
+            inputs.append(word_input)
+
+        def make_handler(idx):
+            def handler(text):
+                # Handle paste: if text contains spaces, distribute words
+                words = text.strip().split()
+                if len(words) > 1:
+                    for j, w in enumerate(words):
+                        target = idx + j
+                        if target < len(inputs):
+                            inputs[target].blockSignals(True)
+                            inputs[target].setText(w.lower())
+                            inputs[target].blockSignals(False)
+                    # Focus the field after the last pasted word
+                    next_focus = min(idx + len(words), len(inputs) - 1)
+                    inputs[next_focus].setFocus()
+                # Validate full seed — update visual state (button stays enabled)
+                entered = ' '.join(inp.text().strip().lower() for inp in inputs)
+                seed_confirmed[0] = bool(test(entered))
+                if seed_confirmed[0]:
+                    self.next_button.setStyleSheet(confirm_active_style)
+                else:
+                    self.next_button.setStyleSheet(confirm_greyed_style)
+            return handler
+
+        for i, inp in enumerate(inputs):
+            inp.textChanged.connect(make_handler(i))
+
+        subtitle = QLabel(_('Hit spacebar to move to next word'))
+        subtitle.setStyleSheet("font-size: 13px; color: gray;")
+        subtitle.setAlignment(Qt.AlignCenter)
+        vbox.addWidget(subtitle)
+        vbox.addLayout(grid)
+        vbox.addStretch(1)
+
+        self.next_button.setText(_('Confirm'))
+        self.set_layout(vbox, title=_("Enter your seed words as you've recorded them to confirm."), next_enabled=True)
+        self.next_button.setStyleSheet(confirm_greyed_style)
+        while True:
+            result = self.loop.exec_()
+            if not result:
+                raise UserCancelled
+            if result == 1:  # Back clicked
+                warn = QMessageBox(self)
+                warn.setWindowTitle(_('Warning'))
+                warn.setTextFormat(Qt.RichText)
+                warn.setText(_('Going back will start the new wallet process over.<br>'
+                               'That means you will be given <b>new seed words</b>.'))
+                warn.setInformativeText(_('Do you want to go back?'))
+                go_back_btn = warn.addButton(_('Go Back'), QMessageBox.AcceptRole)
+                stay_btn = warn.addButton(_('Stay on this page'), QMessageBox.RejectRole)
+                warn.setDefaultButton(stay_btn)
+                warn.exec_()
+                if warn.clickedButton() == go_back_btn:
+                    # Pop 'confirm_seed' so go_back() skips
+                    # 'create_standard_seed' and lands on
+                    # 'create_new_wallet' (the naming dialog).
+                    self.stack.pop()
+                    raise GoBack
+                continue
+            # result == 2 (Confirm clicked)
+            if not seed_confirmed[0]:
+                warn = QMessageBox(self)
+                warn.setWindowTitle(_('Warning'))
+                warn.setTextFormat(Qt.RichText)
+                warn.setText(_("What you've entered on this page doesn't "
+                               "match your seed words.<br><br>"
+                               "If you don't back up your seed words and "
+                               "then lose access to your device, you will "
+                               "be unable to recover any funds in the "
+                               "wallet.<br><br>"
+                               "Do you really want to skip confirming your "
+                               "seed words?"))
+                stay_btn = warn.addButton(_('Stay on page and confirm'),
+                                          QMessageBox.AcceptRole)
+                skip_btn = warn.addButton(_('Skip confirming and continue'),
+                                          QMessageBox.RejectRole)
+                warn.setDefaultButton(stay_btn)
+                warn.exec_()
+                if warn.clickedButton() == stay_btn:
+                    continue
+            break  # Confirmed or user chose to skip
+        self.next_button.setStyleSheet("font-size: 24px; padding: 8px 24px;")
+        self.title.setVisible(False)
+        self.back_button.setEnabled(False)
+        self.next_button.setEnabled(False)
+        self.main_widget.setVisible(False)
+        self.please_wait.setVisible(True)
+        self.refresh_gui()
+        self.next_button.setText(_('Next'))
+
+        entered = ' '.join(inp.text().strip().lower() for inp in inputs)
+        return entered
 
     @wizard_dialog
     def show_seed_dialog(self, run_next, seed_text, editable=True):
-        title =  _("Your wallet generation seed is:")
-        slayout = SeedLayout(seed=seed_text, title=title, msg=True, options=['ext'], editable=False)
-        self.exec_layout(slayout)
-        return slayout.is_ext
+        vbox = QVBoxLayout()
+        words = seed_text.split()
+
+        # Word grid: 2 rows × 6 columns (adapts for longer seeds)
+        grid = QGridLayout()
+        grid.setSpacing(8)
+
+        if ColorScheme.dark_scheme:
+            card_style = "QFrame { border: 1px solid #555; border-radius: 8px; background: #3a3a3a; padding: 4px; }"
+            num_color = "#6ea8d9"
+        else:
+            card_style = "QFrame { border: 1px solid #ccc; border-radius: 8px; background: white; padding: 4px; }"
+            num_color = "#5b9bd5"
+
+        frames = []
+        for i, word in enumerate(words):
+            row = i // 6
+            col = i % 6
+
+            frame = QFrame()
+            frame.setStyleSheet(card_style)
+            frame_layout = QVBoxLayout(frame)
+            frame_layout.setContentsMargins(6, 4, 6, 8)
+            frame_layout.setSpacing(0)
+
+            num_label = QLabel(str(i + 1))
+            num_label.setStyleSheet(f"color: {num_color}; font-size: 20px; border: none; background: transparent;")
+            num_label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+
+            word_label = QLabel(word)
+            word_label.setStyleSheet("font-size: 20px; border: none; background: transparent;")
+            word_label.setAlignment(Qt.AlignCenter)
+
+            frame_layout.addWidget(num_label)
+            frame_layout.addWidget(word_label)
+
+            grid.addWidget(frame, row, col)
+            frames.append(frame)
+
+        vbox.addLayout(grid)
+        vbox.addSpacing(16)
+
+        # Warning messages
+        msg_style = "font-size: 14px;"
+        msg1 = QLabel(_("Write these words down on a <b>physical piece of paper</b> and store that paper somewhere safe."))
+        msg1.setWordWrap(True)
+        msg1.setStyleSheet(msg_style)
+        vbox.addWidget(msg1)
+        msg2 = QLabel(_("Storing these words electronically (for example, in a text file or picture) is much less secure."))
+        msg2.setWordWrap(True)
+        msg2.setStyleSheet(msg_style)
+        vbox.addWidget(msg2)
+        msg3 = QLabel(_("<b>Anyone who has these words can spend the funds in your wallet.</b>"))
+        msg3.setWordWrap(True)
+        msg3.setStyleSheet(msg_style)
+        vbox.addWidget(msg3)
+
+        vbox.addStretch(1)
+
+        self.next_button.setText(_('Confirm'))
+        self.set_layout(vbox, title=_("These are your new wallet's seed words:"))
+        while True:
+            result = self.loop.exec_()
+            if not result:
+                raise UserCancelled
+            if result == 1:  # Back clicked
+                warn = QMessageBox(self)
+                warn.setWindowTitle(_('Warning'))
+                warn.setTextFormat(Qt.RichText)
+                warn.setText(_('Going back will start the new wallet process over.<br>'
+                               'That means you will be given <b>new seed words</b>.'))
+                warn.setInformativeText(_('Do you want to go back?'))
+                go_back_btn = warn.addButton(_('Go Back'), QMessageBox.AcceptRole)
+                stay_btn = warn.addButton(_('Stay on this page'), QMessageBox.RejectRole)
+                warn.setDefaultButton(stay_btn)
+                warn.exec_()
+                if warn.clickedButton() == go_back_btn:
+                    raise GoBack
+                continue
+            break  # result == 2 (Confirm)
+        self.title.setVisible(False)
+        self.back_button.setEnabled(False)
+        self.next_button.setEnabled(False)
+        self.main_widget.setVisible(False)
+        self.please_wait.setVisible(True)
+        self.refresh_gui()
+        self.next_button.setText(_('Next'))
+
+        # Record rendered card sizes so confirm_seed_dialog can match them
+        self._seed_card_sizes = [f.size() for f in frames]
+
+        return False  # no seed extension
 
     def pw_layout(self, msg, kind):
         playout = PasswordLayout(None, msg, kind, self.next_button)
         playout.encrypt_cb.setChecked(True)
-        self.exec_layout(playout.layout())
+        pw_widget = QWidget()
+        pw_widget.setStyleSheet("font-size: 14px;")
+        pw_widget.setLayout(playout.layout())
+        vbox = QVBoxLayout()
+        vbox.addWidget(pw_widget)
+        vbox.addStretch(1)
+        self.exec_layout(vbox)
         return playout.new_password(), playout.encrypt_cb.isChecked()
 
     @wizard_dialog
     def request_password(self, run_next):
         """Request the user enter a new password and confirm it.  Return
-        the password or None for no password.  Note that this dialog screen
-        cannot go back, and instead the user can only cancel."""
-        return self.pw_layout(MSG_ENTER_PASSWORD, PW_NEW)
+        the password or None for no password."""
+        playout = PasswordLayout(None, MSG_ENTER_PASSWORD, PW_NEW,
+                                 self.next_button)
+        playout.encrypt_cb.setChecked(True)
+        pw_widget = QWidget()
+        pw_widget.setStyleSheet("font-size: 14px;")
+        pw_widget.setLayout(playout.layout())
+        vbox = QVBoxLayout()
+        vbox.addWidget(pw_widget)
+        vbox.addStretch(1)
+        self.set_layout(vbox)
+        while True:
+            result = self.loop.exec_()
+            if not result:
+                raise UserCancelled
+            if result == 1:  # Back clicked
+                warn = QMessageBox(self)
+                warn.setWindowTitle(_('Warning'))
+                warn.setTextFormat(Qt.RichText)
+                warn.setText(
+                    _('Going back will start the new wallet process '
+                      'over.<br>That means you will be given '
+                      '<b>new seed words</b>.'))
+                warn.setInformativeText(_('Do you want to go back?'))
+                go_back_btn = warn.addButton(
+                    _('Go Back'), QMessageBox.AcceptRole)
+                stay_btn = warn.addButton(
+                    _('Stay on this page'), QMessageBox.RejectRole)
+                warn.setDefaultButton(stay_btn)
+                warn.exec_()
+                if warn.clickedButton() == go_back_btn:
+                    # Pop 'create_wallet', 'create_keystore', and
+                    # 'confirm_seed' so go_back() skips
+                    # 'create_standard_seed' and lands on
+                    # 'create_new_wallet' (naming dialog).
+                    self.stack.pop()  # pop 'create_wallet'
+                    self.stack.pop()  # pop 'create_keystore'
+                    self.stack.pop()  # pop 'confirm_seed'
+                    raise GoBack
+                continue
+            break  # result == 2 (Next)
+        self.title.setVisible(False)
+        self.back_button.setEnabled(False)
+        self.next_button.setEnabled(False)
+        self.main_widget.setVisible(False)
+        self.please_wait.setVisible(True)
+        self.refresh_gui()
+        return playout.new_password(), playout.encrypt_cb.isChecked()
 
     @staticmethod
     def _add_extra_button_to_layout(extra_button, layout):
@@ -436,6 +1267,7 @@ class InstallWizard(QDialog, MessageBoxMixin, BaseWizard):
 
     def confirm(self, message, title, extra_button=None):
         label = WWLabel(message)
+        label.setStyleSheet("font-size: 14px;")
 
         textInteractionFlags = (Qt.LinksAccessibleByMouse
                                 | Qt.TextSelectableByMouse
@@ -448,6 +1280,7 @@ class InstallWizard(QDialog, MessageBoxMixin, BaseWizard):
         vbox.addWidget(label)
         if extra_button:
             self._add_extra_button_to_layout(extra_button, vbox)
+        vbox.addStretch(1)
         self.exec_layout(vbox, title)
 
     @wizard_dialog
@@ -469,10 +1302,14 @@ class InstallWizard(QDialog, MessageBoxMixin, BaseWizard):
         c_values = [x[0] for x in choices]
         c_titles = [x[1] for x in choices]
         clayout = ChoicesLayout(message, c_titles)
+        choice_widget = QWidget()
+        choice_widget.setStyleSheet("font-size: 14px;")
+        choice_widget.setLayout(clayout.layout())
         vbox = QVBoxLayout()
-        vbox.addLayout(clayout.layout())
+        vbox.addWidget(choice_widget)
         if extra_button:
             self._add_extra_button_to_layout(extra_button, vbox)
+        vbox.addStretch(1)
         self.exec_layout(vbox, title)
         action = c_values[clayout.selected_index()]
         return action
@@ -511,14 +1348,21 @@ class InstallWizard(QDialog, MessageBoxMixin, BaseWizard):
     @wizard_dialog
     def line_dialog(self, run_next, title, message, default, test, warning=''):
         vbox = QVBoxLayout()
-        vbox.addWidget(WWLabel(message))
+        line_style = "font-size: 14px;"
+        msg_lbl = WWLabel(message)
+        msg_lbl.setStyleSheet(line_style)
+        vbox.addWidget(msg_lbl)
         line = QLineEdit()
+        line.setStyleSheet(line_style)
         line.setText(default)
         def f(text):
             self.next_button.setEnabled(bool(test(text)))
         line.textEdited.connect(f)
         vbox.addWidget(line)
-        vbox.addWidget(WWLabel(warning))
+        warn_lbl = WWLabel(warning)
+        warn_lbl.setStyleSheet(line_style)
+        vbox.addWidget(warn_lbl)
+        vbox.addStretch(1)
         self.exec_layout(vbox, title, next_enabled=test(default))
         return ' '.join(line.text().split())
 
@@ -533,24 +1377,32 @@ class InstallWizard(QDialog, MessageBoxMixin, BaseWizard):
             derivation_scan_dialog.deleteLater()
 
         vbox = QVBoxLayout()
-        vbox.addWidget(WWLabel(message))
+        style_14 = "font-size: 14px;"
+        msg_lbl = WWLabel(message)
+        msg_lbl.setStyleSheet(style_14)
+        vbox.addWidget(msg_lbl)
         line = QLineEdit()
+        line.setStyleSheet(style_14)
         line.setText(default)
         def f(text):
             self.next_button.setEnabled(bool(test(text)))
         line.textEdited.connect(f)
         vbox.addWidget(line)
-        vbox.addWidget(WWLabel(warning))
+        warn_lbl = WWLabel(warning)
+        warn_lbl.setStyleSheet(style_14)
+        vbox.addWidget(warn_lbl)
 
         if scannable:
             hbox = QHBoxLayout()
             hbox.setContentsMargins(12,24,12,12)
             but = QPushButton(_("Scan Derivation Paths..."))
+            but.setStyleSheet(style_14)
             hbox.addStretch(1)
             hbox.addWidget(but)
             vbox.addLayout(hbox)
             but.clicked.connect(lambda: on_derivation_scan(line, seed))
 
+        vbox.addStretch(1)
         self.exec_layout(vbox, title, next_enabled=test(default))
         return ' '.join(line.text().split())
 

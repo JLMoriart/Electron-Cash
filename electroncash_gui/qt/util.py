@@ -668,7 +668,12 @@ class MyTreeWidget(QTreeWidget):
         available = header.width()
         if total <= 0 or available <= 0:
             return
-        other_width = total - header.sectionSize(self.stretch_column)
+        # Auto-fit non-stretch columns to their content
+        for col in range(header.count()):
+            if col != self.stretch_column:
+                self.resizeColumnToContents(col)
+        # Give stretch column all remaining space
+        other_width = sum(header.sectionSize(c) for c in range(header.count()) if c != self.stretch_column)
         new_width = max(available - other_width, header.minimumSectionSize())
         header.resizeSection(self.stretch_column, new_width)
 

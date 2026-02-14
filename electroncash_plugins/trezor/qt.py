@@ -145,6 +145,22 @@ class QtHandler(QtHandlerBase):
         self.clear_dialog()
         dialog = WindowModalDialog(self.top_level_window(), _("Enter PIN"))
         matrix = self.pin_matrix_widget_class()
+        matrix.password.setReadOnly(True)
+        # Hide the strength label (weak/fine/strong)
+        matrix.strength.hide()
+        # Add 1px spacing between keypad buttons
+        grid_layout = matrix.layout().itemAt(0).layout()
+        if grid_layout:
+            grid_layout.setSpacing(1)
+        # Add a backspace button into the existing password row layout
+        password_hbox = matrix.layout().itemAt(1).layout()
+        backspace_btn = QPushButton("⌫")
+        backspace_btn.setFocusPolicy(Qt.NoFocus)
+        backspace_btn.clicked.connect(
+            lambda: matrix.password.setText(matrix.password.text()[:-1])
+        )
+        if password_hbox:
+            password_hbox.addWidget(backspace_btn)
         vbox = QVBoxLayout()
         vbox.addWidget(QLabel(msg))
         vbox.addWidget(matrix)

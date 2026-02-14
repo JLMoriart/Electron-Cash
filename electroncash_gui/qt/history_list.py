@@ -145,8 +145,8 @@ class HistoryList(MyTreeWidget, PrintError):
             status, status_str = self.wallet.get_tx_status(tx_hash, height, conf, timestamp)
             has_invoice = self.wallet.invoices.paid.get(tx_hash)
             conf_text = str(max(conf, 0)) if conf <= 9 else "9+"
-            v_str = self.parent.format_amount(value, True, whitespaces=True)
-            balance_str = self.parent.format_amount(balance, whitespaces=True)
+            v_str = self.parent.format_amount(value, True, whitespaces=False)
+            balance_str = self.parent.format_amount(balance, whitespaces=False)
             entry = [conf_text, tx_hash, status_str, label, v_str, balance_str]
             if fx and fx.show_history():
                 date = timestamp_to_datetime(time.time() if conf <= 0 else timestamp)

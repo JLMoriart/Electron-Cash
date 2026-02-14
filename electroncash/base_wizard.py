@@ -222,13 +222,14 @@ class BaseWizard(util.PrintError):
         title = _('Hardware Keystore')
         # check available plugins
         support = self.plugins.get_hardware_support()
-        # scan devices
+        # scan devices once upfront (not per-plugin) to avoid repeated enumeration
         devices = []
         devmgr = self.plugins.device_manager
+        scanned = devmgr.scan_devices()
         for name, description, plugin in support:
             try:
                 # FIXME: side-effect: unpaired_device_info sets client.handler
-                u = devmgr.unpaired_device_infos(None, plugin)
+                u = devmgr.unpaired_device_infos(None, plugin, devices=scanned)
             except:
                 devmgr.print_exception("error", name)
                 continue
@@ -455,7 +456,6 @@ class BaseWizard(util.PrintError):
 
     def create_wallet(self):
         if any(k.may_have_password() for k in self.keystores):
-            self.stack = []  # 'Back' button wasn't working anyway at this point, so we just force it to read 'Cancel' and quit the wizard by doing this.
             self.request_password(run_next=self.on_password)
         else:
             self.on_password(None, False)

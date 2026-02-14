@@ -118,6 +118,130 @@ class StatusBarButton(QPushButton):
 from electroncash.paymentrequest import PR_PAID
 
 
+class ButtonTabWidget(QWidget):
+    """Drop-in replacement for QTabWidget using a button bar + show/hide."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._tabs = []  # list of (widget, icon, text, button_or_None)
+        self._current = -1
+        self._button_bar = QHBoxLayout()
+        self._button_bar.setContentsMargins(0, 0, 0, 0)
+        self._button_bar.addStretch(1)
+        self._content_layout = QVBoxLayout()
+        self._content_layout.setContentsMargins(0, 0, 0, 0)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addLayout(self._button_bar)
+        layout.addLayout(self._content_layout, 1)
+
+    def _style_button(self, btn):
+        """In light mode, flat buttons are invisible against the white
+        background. Give them a subtle darker tint so they stand out.
+        In dark mode, keep flat so qdarkstyle handles styling."""
+        if ColorScheme.dark_scheme:
+            btn.setFlat(True)
+        else:
+            btn.setStyleSheet(
+                "QPushButton { background-color: rgba(0, 0, 0, 77); border: none; border-radius: 4px; padding: 4px 8px; }"
+                " QPushButton:hover { background-color: rgba(0, 0, 0, 51); }"
+            )
+
+    def addTab(self, widget, icon_or_text, text=None, hidden_button=False):
+        if text is None:
+            text = icon_or_text
+            icon_or_text = QIcon()
+        btn = None
+        if not hidden_button:
+            btn = QPushButton(icon_or_text, text)
+            self._style_button(btn)
+            idx = len(self._tabs)
+            btn.clicked.connect(lambda checked, i=idx: self.setCurrentIndex(i))
+            self._button_bar.insertWidget(self._button_bar.count() - 1, btn)
+        self._content_layout.addWidget(widget)
+        widget.hide()
+        self._tabs.append((widget, icon_or_text, text, btn))
+        if self._current == -1:
+            self.setCurrentIndex(len(self._tabs) - 1)
+
+    def insertTab(self, index, widget, icon, text):
+        btn = QPushButton(icon, text)
+        self._style_button(btn)
+        self._tabs.insert(index, (widget, icon, text, btn))
+        self._content_layout.addWidget(widget)
+        widget.hide()
+        self._rebuild_button_bar()
+        if self._current >= index:
+            self._current += 1
+
+    def removeTab(self, index):
+        if 0 <= index < len(self._tabs):
+            widget, icon, text, btn = self._tabs.pop(index)
+            widget.hide()
+            self._content_layout.removeWidget(widget)
+            if btn:
+                self._button_bar.removeWidget(btn)
+                btn.deleteLater()
+            self._rebuild_button_bar()
+            if self._current == index:
+                self.setCurrentIndex(0 if self._tabs else -1)
+            elif self._current > index:
+                self._current -= 1
+
+    def _rebuild_button_bar(self):
+        for i in range(self._button_bar.count() - 1, -1, -1):
+            item = self._button_bar.itemAt(i)
+            if item and item.widget():
+                self._button_bar.removeWidget(item.widget())
+        for i, (w, icon, text, btn) in enumerate(self._tabs):
+            if btn:
+                try:
+                    btn.clicked.disconnect()
+                except Exception:
+                    pass
+                btn.clicked.connect(lambda checked, i=i: self.setCurrentIndex(i))
+                self._button_bar.insertWidget(self._button_bar.count() - 1, btn)
+
+    def indexOf(self, widget):
+        for i, (w, icon, text, btn) in enumerate(self._tabs):
+            if w is widget:
+                return i
+        return -1
+
+    def setCurrentIndex(self, index):
+        if 0 <= self._current < len(self._tabs):
+            self._tabs[self._current][0].hide()
+        if 0 <= index < len(self._tabs):
+            self._tabs[index][0].show()
+            self._current = index
+
+    def currentIndex(self):
+        return self._current
+
+    def count(self):
+        return len(self._tabs)
+
+    def __len__(self):
+        return len(self._tabs)
+
+    def widget(self, index):
+        if 0 <= index < len(self._tabs):
+            return self._tabs[index][0]
+        return None
+
+    def tabBar(self):
+        return self
+
+    def isTabVisible(self, index):
+        if 0 <= index < len(self._tabs):
+            return self._tabs[index][3] is not None
+        return False
+
+    def setTabVisible(self, index, visible):
+        pass
+
+
 class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
 
     # Note: self.clean_up_connections automatically detects signals named XXX_signal and disconnects them on window close.
@@ -185,7 +309,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
 
         self.completions = QStringListModel()
 
-        self.tabs = tabs = QTabWidget(self)
+        self.tabs = tabs = ButtonTabWidget(self)
         self.send_tab = self.create_send_tab()
         self.receive_tab = self.create_receive_tab()
         self.addresses_tab = self.create_addresses_tab()
@@ -197,8 +321,8 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         self.converter_tab = self.create_converter_tab()
         self.home_tab = self.create_history_tab()
         tabs.addTab(self.home_tab, QIcon(":icons/tab_history.png"), _('Home'))
-        tabs.addTab(self.send_tab, QIcon(":icons/tab_send.png"), _('Send'))
-        tabs.addTab(self.receive_tab, QIcon(":icons/tab_receive.png"), _('Receive'))
+        tabs.addTab(self.send_tab, QIcon(":icons/tab_send.png"), _('Send'), hidden_button=True)
+        tabs.addTab(self.receive_tab, QIcon(":icons/tab_receive.png"), _('Receive'), hidden_button=True)
         # clears/inits the opreturn widgets
         self.on_toggled_opreturn(bool(self.config.get('enable_opreturn')))
 
@@ -230,11 +354,26 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         self._shortcuts.add( QShortcut(QKeySequence("Ctrl+W"), self, self.close) )
         # Below is now addded to the menu as Ctrl+R but we'll also support F5 like browsers do
         self._shortcuts.add( QShortcut(QKeySequence("F5"), self, self.update_wallet) )
-        self._shortcuts.add( QShortcut(QKeySequence("Ctrl+PgUp"), self, lambda: wrtabs() and wrtabs().setCurrentIndex((wrtabs().currentIndex() - 1)%wrtabs().count())) )
-        self._shortcuts.add( QShortcut(QKeySequence("Ctrl+PgDown"), self, lambda: wrtabs() and wrtabs().setCurrentIndex((wrtabs().currentIndex() + 1)%wrtabs().count())) )
+        def _cycle_tab(direction):
+            t = wrtabs()
+            if not t:
+                return
+            cur = t.currentIndex()
+            for _ in range(t.count()):
+                cur = (cur + direction) % t.count()
+                if t.isTabVisible(cur):
+                    t.setCurrentIndex(cur)
+                    return
+        self._shortcuts.add(QShortcut(QKeySequence("Ctrl+PgUp"), self, lambda: _cycle_tab(-1)))
+        self._shortcuts.add(QShortcut(QKeySequence("Ctrl+PgDown"), self, lambda: _cycle_tab(1)))
 
+        visible_n = 0
         for i in range(tabs.count()):
-            self._shortcuts.add( QShortcut(QKeySequence("Alt+" + str(i + 1)), self, lambda i=i: wrtabs() and wrtabs().setCurrentIndex(i)) )
+            if not tabs.isTabVisible(i):
+                continue
+            visible_n += 1
+            self._shortcuts.add(QShortcut(QKeySequence("Alt+" + str(visible_n)), self,
+                                          lambda i=i: wrtabs() and wrtabs().setCurrentIndex(i)))
 
         self.gui_object.cashaddr_toggled_signal.connect(self.update_cashaddr_icon)
         self.payment_request_ok_signal.connect(self.payment_request_ok)
@@ -1222,11 +1361,11 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
             x.setVisible(b)
 
     def create_receive_tab(self):
-        # A 4-column grid layout.  All the stretch is in the last column.
-        # The exchange rate plugin adds a fiat widget in column 2
+        # A 5-column grid layout.  All the stretch is in the last column.
+        # The exchange rate plugin adds a bidi icon in column 2 and fiat widget in column 3
         self.receive_grid = grid = QGridLayout()
         grid.setSpacing(8)
-        grid.setColumnStretch(3, 1)
+        grid.setColumnStretch(4, 1)
 
         self.receive_address = None
         self.receive_address_e = ButtonsLineEdit()
@@ -1365,7 +1504,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         self.receive_opreturn_rawhex_cb.setToolTip(_('If unchecked, the textbox contents are UTF8-encoded into a single-push script: <tt>OP_RETURN PUSH &lt;text&gt;</tt>. If checked, the text contents will be interpreted as a raw hexadecimal script to be appended after the OP_RETURN opcode: <tt>OP_RETURN &lt;script&gt;</tt>.'))
         grid.addWidget(label, row, 0)
         grid.addWidget(self.receive_opreturn_e, row, 1, 1, 3)
-        grid.addWidget(self.receive_opreturn_rawhex_cb, row, 4, Qt.AlignLeft)
+        grid.addWidget(self.receive_opreturn_rawhex_cb, row, 5, Qt.AlignLeft)
         row += 1
         self.receive_opreturn_e.textChanged.connect(self.update_receive_qr)
         self.receive_opreturn_rawhex_cb.clicked.connect(self.update_receive_qr)
@@ -1383,9 +1522,14 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         self.receive_amount_e.textChanged.connect(self.update_receive_qr)
 
         self.fiat_receive_e = AmountEdit(self.fx.get_currency if self.fx else '')
+        self.bidi_receive_icon = QLabel()
+        bidi_icon_path = ":icons/bidirectional_arrows_darkmode.png" if ColorScheme.dark_scheme else ":icons/bidi_arrow.png"
+        self.bidi_receive_icon.setPixmap(QIcon(bidi_icon_path).pixmap(16))
         if not self.fx or not self.fx.is_enabled():
             self.fiat_receive_e.setVisible(False)
-        grid.addWidget(self.fiat_receive_e, row, 2, Qt.AlignLeft)
+            self.bidi_receive_icon.setVisible(False)
+        grid.addWidget(self.bidi_receive_icon, row, 2)
+        grid.addWidget(self.fiat_receive_e, row, 3, Qt.AlignLeft)
         self.connect_fields(self, self.receive_amount_e, self.fiat_receive_e, None)
         row += 1
 
@@ -4595,6 +4739,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         b = self.fx and self.fx.is_enabled()
         self.fiat_send_e.setVisible(b)
         self.bidi_icon.setVisible(b)
+        self.bidi_receive_icon.setVisible(b)
         self.fiat_receive_e.setVisible(b)
         self.history_list.refresh_headers()
         self.history_list.update()
@@ -4975,7 +5120,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         gui_widgets.append((qr_label, qr_combo))
 
         colortheme_combo = QComboBox()
-        colortheme_combo.addItem(_('Default'), 'default')  # We can't name this "light" in the UI as sometimes the default is actually dark-looking eg on Mojave or on some Linux desktops.
+        colortheme_combo.addItem(_('Light'), 'default')
         colortheme_combo.addItem(_('Dark'), 'dark')
         theme_name = self.config.get('qt_gui_color_theme', 'default')
         dark_theme_available = self.gui_object.is_dark_theme_available()

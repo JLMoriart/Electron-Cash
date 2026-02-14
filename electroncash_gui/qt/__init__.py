@@ -649,7 +649,8 @@ class ElectrumGui(QObject, PrintError):
                     # and just want to proceed to the InstallWizard so the user
                     # can either specify a different wallet or create a new one.
                     # (See issue #1189 where before they would get stuck)
-                    path = self.get_new_wallet_path()  # give up on this unknown wallet and try a new name.. note if things get really bad this will raise FileNotFoundError and the app aborts here.
+                    if not os.path.exists(path):
+                        path = self.get_new_wallet_path()  # give up on this unknown wallet and try a new name.. note if things get really bad this will raise FileNotFoundError and the app aborts here.
                     wallet = None  # fall thru to wizard
                 if not wallet:
                     storage = WalletStorage(path, manual_upgrades=True)
