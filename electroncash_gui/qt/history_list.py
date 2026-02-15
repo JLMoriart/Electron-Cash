@@ -80,9 +80,15 @@ class HistoryList(MyTreeWidget, PrintError):
         transactions between unverified_tx and verified_tx but don't add or
         remove them, so len(wallet.transactions) stays the same.  The existing
         TxUpdateMgr.process_verifs() already handles these incrementally.'''
+        from ._perf_flags import opt_disabled
+        if opt_disabled('history_skip'):
+            return False
         if self.cleaned_up:
             return True
-        return len(self.wallet.transactions) == self._last_tx_count
+        skip = len(self.wallet.transactions) == self._last_tx_count
+        if skip:
+            print(f"[SKIP] HistoryList: tx count unchanged ({self._last_tx_count}), skipping full rebuild")
+        return skip
 
     def refresh_headers(self):
         headers = ['', '', _('Date'), _('Description') , _('Amount'), _('Balance')]

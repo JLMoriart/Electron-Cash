@@ -267,6 +267,15 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
                 self.check_necessary_server_features()
 
         gui_object.timer.timeout.connect(self.timer_actions)
+
+        # Hang detector: fires every 50ms, reports gaps > 150ms (50ms interval + 100ms threshold)
+        self._hang_start = time.perf_counter()
+        self._hang_last_tick = self._hang_start
+        self._hang_timer = QTimer(self)
+        self._hang_timer.setInterval(50)
+        self._hang_timer.timeout.connect(self._hang_check)
+        self._hang_timer.start()
+
         self.fetch_alias()
 
         self.gui_object.token_metadata_updated_signal.connect(lambda x: self.update_tabs())
@@ -873,14 +882,28 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
             config.set_key('io_dir', os.path.dirname(fileName), True)
         return fileName
 
+    def _hang_check(self):
+        now = time.perf_counter()
+        gap = now - self._hang_last_tick
+        if gap > 0.15:  # 150ms = 50ms interval + 100ms threshold
+            since_start = now - self._hang_start
+            print(f"[HANG] GUI thread blocked for {gap:.4f}s  (T+{since_start:.1f}s)")
+        self._hang_last_tick = now
+
     def timer_actions(self):
         # Note this runs in the GUI thread
+        _t_total = time.perf_counter()
+        _parts = []
 
         if self.need_update.is_set():
+            _t0 = time.perf_counter()
             self._update_wallet() # will clear flag when it runs. (also clears labels_need_update as well)
+            _parts.append(f"wallet={time.perf_counter() - _t0:.4f}s")
 
         if self.labels_need_update.is_set():
+            _t0 = time.perf_counter()
             self._update_labels() # will clear flag when it runs.
+            _parts.append(f"labels={time.perf_counter() - _t0:.4f}s")
 
         # resolve aliases
         # FIXME this is a blocking network call that has a timeout of 5 sec
@@ -891,7 +914,15 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
             self.require_fee_update = False
 
         # hook for other classes to be called here. For example the tx_update_mgr is called here (see TxUpdateMgr.do_check).
+        _t0 = time.perf_counter()
         self.on_timer_signal.emit()
+        _t_signal = time.perf_counter() - _t0
+        if _t_signal > 0.01:
+            _parts.append(f"on_timer_signal={_t_signal:.4f}s")
+
+        _t_elapsed = time.perf_counter() - _t_total
+        if _t_elapsed > 0.05:
+            print(f"[TIMING] timer_actions: TOTAL={_t_elapsed:.4f}s  {', '.join(_parts)}")
 
     def format_amount(self, x, is_diff=False, whitespaces=False):
         return format_satoshis(x, self.num_zeros, self.decimal_point, is_diff=is_diff, whitespaces=whitespaces)
@@ -1085,28 +1116,47 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
     @rate_limited(1.0, classlevel=True, ts_after=True) # Limit tab updates to no more than 1 per second, app-wide. Multiple calls across instances will be collated into 1 deferred series of calls (1 call per extant instance)
     def update_tabs(self):
         if self.cleaned_up: return
-        self.history_list.update()
-        self.request_list.update()
-        self.address_list.update()
-        self.utxo_list.update()
-        self.token_list.update()
-        self.token_history_list.update()
-        self.contact_list.update()
-        self.invoice_list.update()
+        _t_tabs_total = time.perf_counter()
+        _widgets = [
+            ('history_list', self.history_list),
+            ('request_list', self.request_list),
+            ('address_list', self.address_list),
+            ('utxo_list', self.utxo_list),
+            ('token_list', self.token_list),
+            ('token_history_list', self.token_history_list),
+            ('contact_list', self.contact_list),
+            ('invoice_list', self.invoice_list),
+        ]
+        _parts = []
+        for _name, _widget in _widgets:
+            _t0 = time.perf_counter()
+            _widget.update()
+            _elapsed = time.perf_counter() - _t0
+            if _elapsed > 0.001:
+                _parts.append(f"{_name}={_elapsed:.4f}s")
         self.update_completions()
         # When HistoryList skipped its rebuild (no new/removed transactions),
         # avoid the expensive history_updated_signal dispatch (~0.8s with
         # connected receivers).  Just clear the verification queue directly
         # since there's nothing new to process.
-        if getattr(self.history_list, '_update_skipped', False):
+        from ._perf_flags import opt_disabled
+        _t0 = time.perf_counter()
+        if not opt_disabled('history_skip') and getattr(self.history_list, '_update_skipped', False):
             self.tx_update_mgr.verifs_get_and_clear()
         else:
             self.history_updated_signal.emit() # inform things like address_dialog that there's a new history, also clears self.tx_update_mgr.verif_q
+        _t_emit = time.perf_counter() - _t0
+        if _t_emit > 0.001:
+            _parts.append(f"emit={_t_emit:.4f}s")
         self.need_update.clear() # clear flag
         if self.labels_need_update.is_set():
             # if flag was set, might as well declare the labels updated since they necessarily were due to a full update.
             self.labels_updated_signal.emit() # just in case client code was waiting for this signal to proceed.
             self.labels_need_update.clear() # clear flag
+        _t_tabs_elapsed = time.perf_counter() - _t_tabs_total
+        _parts.append(f"TOTAL={_t_tabs_elapsed:.4f}s")
+        if _t_tabs_elapsed > 0.05:
+            print(f"[TIMING] update_tabs: {', '.join(_parts)}")
 
     def update_labels(self):
         self.labels_need_update.set() # will enqueue an _update_labels() call in at most 0.5 seconds from now
