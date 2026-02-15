@@ -273,6 +273,17 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         self._hang_start = time.perf_counter()
         self._hang_last_tick = self._hang_start
         self._hang_total = 0.0
+        # Per-category cost accumulators — reset after each [HANG] report
+        self._cost = {
+            'history_rebuild': 0.0,
+            'get_balance': 0.0,
+            'unverif_count': 0.0,
+            'signal_emit': 0.0,
+            'restoreScrollBar': 0.0,
+            'other_widgets': 0.0,
+        }
+        # Cumulative totals that never reset (shown in [COST] line)
+        self._cost_cumulative = dict.fromkeys(self._cost, 0.0)
         self._hang_timer = QTimer(self)
         self._hang_timer.setInterval(50)
         self._hang_timer.timeout.connect(self._hang_check)
@@ -890,7 +901,20 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         if gap > 0.15:  # 150ms = 50ms interval + 100ms threshold
             self._hang_total += gap
             since_start = now - self._hang_start
+            # Accumulate into cumulative totals
+            for k, v in self._cost.items():
+                self._cost_cumulative[k] += v
+            # Build cost breakdown (only non-zero categories)
+            parts = [f"{k}={v:.4f}s" for k, v in self._cost.items() if v > 0.001]
+            cum_parts = [f"{k}={v:.4f}s" for k, v in self._cost_cumulative.items() if v > 0.001]
             print(f"[HANG] GUI thread blocked for {gap:.4f}s  (T+{since_start:.1f}s)  cumulative={self._hang_total:.4f}s")
+            if parts:
+                print(f"[COST] since last hang: {', '.join(parts)}")
+            if cum_parts:
+                print(f"[COST] cumulative: {', '.join(cum_parts)}")
+            # Reset per-hang accumulators
+            for k in self._cost:
+                self._cost[k] = 0.0
         self._hang_last_tick = now
 
 
@@ -1099,6 +1123,8 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
                     status_tip = status_tip_dict["status_connected_proxy"] if num_chains <= 1 else status_tip_dict["status_connected_proxy_fork"]
 
                 text = ' '.join(text_items)
+                self._cost['get_balance'] += _t_get_balance
+                self._cost['unverif_count'] += _t_unverif
                 if _t_get_balance > 0.01 or _t_fiat > 0.01 or _t_unverif > 0.01:
                     print(f"[TIMING] update_status: get_balance={_t_get_balance:.4f}s  fiat={_t_fiat:.4f}s  unverif={_t_unverif:.4f}s")
         else:
@@ -1170,6 +1196,10 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
             _elapsed = time.perf_counter() - _t0
             if _elapsed > 0.001:
                 _parts.append(f"{_name}={_elapsed:.4f}s")
+            if _name == 'history_list':
+                self._cost['history_rebuild'] += _elapsed
+            else:
+                self._cost['other_widgets'] += _elapsed
         from ._perf_flags import opt_disabled
         if self._completions_need_update or opt_disabled('completions_skip'):
             _t0 = time.perf_counter()
@@ -1186,6 +1216,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         else:
             self.history_updated_signal.emit()
         _t_emit = time.perf_counter() - _t0
+        self._cost['signal_emit'] += _t_emit
         if _t_emit > 0.001:
             _parts.append(f"emit={_t_emit:.4f}s")
         self.need_update.clear() # clear flag

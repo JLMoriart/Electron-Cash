@@ -797,6 +797,10 @@ class MyTreeWidget(QTreeWidget):
                         slf.setSortingEnabled(True)  # Re-enable sorting after updates are re-enabled (triggers one O(N log N) sort)
                     _t3 = _time.perf_counter()
                     _total = _t3 - _t0
+                    # Accumulate into main window's cost tracker if available
+                    _mw = getattr(slf, 'parent', None)
+                    if _mw and hasattr(_mw, '_cost'):
+                        _mw._cost['restoreScrollBar'] += _total
                     if _total > 0.01:
                         print(f"[TIMING] restoreScrollBar({_name}, {_count} items): "
                               f"updateGeometry={_t1-_t0:.4f}s  "
