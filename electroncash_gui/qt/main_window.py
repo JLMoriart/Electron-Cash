@@ -271,6 +271,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         # Hang detector: fires every 50ms, reports gaps > 150ms (50ms interval + 100ms threshold)
         self._hang_start = time.perf_counter()
         self._hang_last_tick = self._hang_start
+        self._hang_total = 0.0
         self._hang_timer = QTimer(self)
         self._hang_timer.setInterval(50)
         self._hang_timer.timeout.connect(self._hang_check)
@@ -886,8 +887,9 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         now = time.perf_counter()
         gap = now - self._hang_last_tick
         if gap > 0.15:  # 150ms = 50ms interval + 100ms threshold
+            self._hang_total += gap
             since_start = now - self._hang_start
-            print(f"[HANG] GUI thread blocked for {gap:.4f}s  (T+{since_start:.1f}s)")
+            print(f"[HANG] GUI thread blocked for {gap:.4f}s  (T+{since_start:.1f}s)  cumulative={self._hang_total:.4f}s")
         self._hang_last_tick = now
 
     def timer_actions(self):
