@@ -313,6 +313,16 @@ class CollapsibleSection(QWidget):
         return self._content_layout
 
 
+class _SimpleEventFilter(QObject):
+    """Lightweight event filter that delegates to a callback.
+    callback(event) should return True if handled, False otherwise."""
+    def __init__(self, callback, parent=None):
+        super().__init__(parent)
+        self._cb = callback
+    def eventFilter(self, obj, event):
+        return self._cb(event)
+
+
 class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
 
     # Note: self.clean_up_connections automatically detects signals named XXX_signal and disconnects them on window close.
@@ -1441,6 +1451,15 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
                     b.setStyleSheet(btn_selected)
                     desc_label.setText(d)
                     self._wallet_tab_continue_btn.setEnabled(True)
+                def dblhandler(event):
+                    if event.type() == QEvent.MouseButtonDblClick:
+                        handler()
+                        self._wallet_tab_continue_clicked()
+                        return True
+                    return False
+                b.event_filter_func = dblhandler  # prevent GC
+                b.installEventFilter(
+                    _SimpleEventFilter(dblhandler, b))
                 return handler
 
             btn.clicked.connect(make_click_handler(key, desc, btn))
@@ -1458,6 +1477,13 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
 
         # --- Continue button (bottom-right) ---
         self._wallet_tab_continue_btn = continue_btn = QPushButton(_('Continue'))
+        font = continue_btn.font()
+        font.setPointSize(font.pointSize() * 2)
+        continue_btn.setFont(font)
+        fm = QFontMetrics(font)
+        vpad = max(fm.height() // 2, 8)
+        continue_btn.setStyleSheet(
+            f'padding: {vpad}px {vpad}px {vpad}px {vpad}px;')
         continue_btn.setEnabled(False)
         continue_btn.clicked.connect(self._wallet_tab_continue_clicked)
         bottom_hbox = QHBoxLayout()
@@ -1654,6 +1680,15 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
                     b.setStyleSheet(btn_selected)
                     desc_label.setText(d)
                     self._tools_tab_continue_btn.setEnabled(True)
+                def dblhandler(event):
+                    if event.type() == QEvent.MouseButtonDblClick:
+                        handler()
+                        self._tools_tab_continue_clicked()
+                        return True
+                    return False
+                b.event_filter_func = dblhandler  # prevent GC
+                b.installEventFilter(
+                    _SimpleEventFilter(dblhandler, b))
                 return handler
 
             btn.clicked.connect(make_click_handler(key, desc, btn))
@@ -1671,6 +1706,13 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
 
         # --- Continue button (bottom-right) ---
         self._tools_tab_continue_btn = continue_btn = QPushButton(_('Continue'))
+        font = continue_btn.font()
+        font.setPointSize(font.pointSize() * 2)
+        continue_btn.setFont(font)
+        fm = QFontMetrics(font)
+        vpad = max(fm.height() // 2, 8)
+        continue_btn.setStyleSheet(
+            f'padding: {vpad}px {vpad}px {vpad}px {vpad}px;')
         continue_btn.setEnabled(False)
         continue_btn.clicked.connect(self._tools_tab_continue_clicked)
         bottom_hbox = QHBoxLayout()
