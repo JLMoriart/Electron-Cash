@@ -33,6 +33,12 @@ QComboBox::item:checked {
     font-weight: bold;
     max-height: 30px;
 }
+/* qdarkstyle sets alternate-background-color identical to the normal
+   background, making alternating row colors invisible.  Override with a
+   slightly lighter shade so the stripes are visible. */
+QTreeView, QListView, QTableView {
+    alternate-background-color: #1E2A36;
+}
 '''
 
 def patch(use_dark_theme: bool = False, darkstyle_ver: tuple = None):

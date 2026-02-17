@@ -612,6 +612,15 @@ class MyTreeWidget(QTreeWidget):
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(create_menu)
         self.setUniformRowHeights(True)
+        self.setAlternatingRowColors(True)
+        # Strengthen the alternate-row color for light mode; the default
+        # Qt palette value is barely distinguishable from white.  Dark mode
+        # is handled separately via style_patcher.py.
+        palette = self.palette()
+        base = palette.color(QPalette.Base)
+        if base.lightnessF() > 0.5:
+            palette.setColor(QPalette.AlternateBase, QColor('#E9ECF1'))
+            self.setPalette(palette)
         # extend the syntax for consistency
         self.addChild = self.addTopLevelItem
         self.insertChild = self.insertTopLevelItem
