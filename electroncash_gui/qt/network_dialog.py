@@ -38,7 +38,6 @@ import PyQt5.QtCore as QtCore
 
 from electroncash import networks
 from electroncash.i18n import _, pgettext
-from electroncash.interface import Interface
 from electroncash.network import serialize_server, deserialize_server, get_eligible_servers
 from electroncash.plugins import run_hook
 from electroncash.simple_config import SimpleConfig
@@ -148,6 +147,547 @@ class NetworkDialog(MessageBoxMixin, OnDestroyedMixin, QDialog):
         # same-named `update` methods.
         QDialog.update(self)
 
+
+class NetworkOverviewDialog(MessageBoxMixin, OnDestroyedMixin, QDialog):
+    '''Standalone modeless dialog showing the Network Overview content
+    (status, server list, connected nodes) without tabs.'''
+
+    network_updated_signal = pyqtSignal()
+
+    def __init__(self, network, config):
+        QDialog.__init__(self)
+        OnDestroyedMixin.__init__(self)
+        self.weak_network = network and weakref.ref(network)
+        self.network = network
+        self.config = config
+        self.protocol = None
+        self.servers = {}
+
+        self.setWindowTitle(_('Network Overview'))
+        self.setMinimumSize(500, 400)
+
+        # Hidden state widgets needed by ServerListWidget/NodesListWidget
+        # parent interface
+        self.autoconnect_cb = QCheckBox()
+        self.ssl_cb = QCheckBox()
+        self.preferred_only_cb = QCheckBox()
+
+        # Build layout
+        vbox = QVBoxLayout(self)
+        grid = QGridLayout()
+        vbox.addLayout(grid)
+
+        # Status
+        row = 0
+        msg = ' '.join([
+            _("Electron Cash connects to several nodes in order to "
+              "download block headers and find out the longest "
+              "blockchain."),
+            _("This blockchain is used to verify the transactions "
+              "sent by your transaction server.")
+        ])
+        self.status_label = QLabel('')
+        self.status_label.setTextInteractionFlags(
+            self.status_label.textInteractionFlags()
+            | Qt.TextSelectableByMouse)
+        grid.addWidget(QLabel(_('Status') + ':'), row, 0)
+        grid.addWidget(self.status_label, row, 1, 1, 3)
+        grid.addWidget(HelpButton(msg), row, 4)
+        row += 1
+
+        # Server
+        self.server_label = QLabel('')
+        self.server_label.setTextInteractionFlags(
+            self.server_label.textInteractionFlags()
+            | Qt.TextSelectableByMouse)
+        msg = _("Electron Cash sends your wallet addresses to a "
+                "single server, in order to receive your transaction "
+                "history.")
+        grid.addWidget(QLabel(_('Server') + ':'), row, 0)
+        grid.addWidget(self.server_label, row, 1, 1, 3)
+        grid.addWidget(HelpButton(msg), row, 4)
+        row += 1
+
+        # Blockchain height
+        self.height_label = QLabel('')
+        self.height_label.setTextInteractionFlags(
+            self.height_label.textInteractionFlags()
+            | Qt.TextSelectableByMouse)
+        msg = _('This is the height of your local copy of the '
+                'blockchain.')
+        grid.addWidget(QLabel(_('Blockchain') + ':'), row, 0)
+        grid.addWidget(self.height_label, row, 1)
+        grid.addWidget(HelpButton(msg), row, 4)
+        row += 1
+
+        # Pending requests
+        self.reqs_label = QLabel('')
+        self.reqs_label.setTextInteractionFlags(
+            self.reqs_label.textInteractionFlags()
+            | Qt.TextSelectableByMouse)
+        msg = _('The number of unanswered network requests.')
+        grid.addWidget(QLabel(_('Pending requests') + ':'), row, 0)
+        grid.addWidget(self.reqs_label, row, 1, 1, 3)
+        grid.addWidget(HelpButton(msg), row, 4)
+        row += 1
+
+        # Chain split
+        self.split_label = QLabel('')
+        self.split_label.setTextInteractionFlags(
+            self.split_label.textInteractionFlags()
+            | Qt.TextSelectableByMouse)
+        grid.addWidget(self.split_label, row, 0, 1, 3)
+        row += 1
+
+        # Server host/port inputs
+        self.server_host = QLineEdit()
+        self.server_host.setFixedWidth(200)
+        self.server_host.setValidator(HostValidator(self.server_host))
+        self.server_port = QLineEdit()
+        self.server_port.setFixedWidth(60)
+        self.server_port.setValidator(PortValidator(self.server_port))
+
+        weakSelf = Weak.ref(self)
+        self.server_host.editingFinished.connect(
+            lambda: weakSelf() and weakSelf().set_server(
+                onion_hack=True))
+        self.server_port.editingFinished.connect(
+            lambda: weakSelf() and weakSelf().set_server(
+                onion_hack=True))
+
+        grid.addWidget(QLabel(_('Server') + ':'), row, 0)
+        grid.addWidget(self.server_host, row, 1, 1, 2)
+        grid.addWidget(self.server_port, row, 3)
+        row += 1
+
+        # Server list label
+        self.server_list_label = QLabel('')
+        grid.addWidget(self.server_list_label, row, 0, 1, 5)
+        row += 1
+
+        # Server list widget
+        self.servers_list = ServerListWidget(self)
+        grid.addWidget(self.servers_list, row, 0, 1, 5)
+        row += 1
+
+        # Legend
+        self.legend_label = WWLabel('')
+        self.legend_label.setTextInteractionFlags(
+            self.legend_label.textInteractionFlags()
+            & (~Qt.TextSelectableByMouse))
+        self.legend_label.linkActivated.connect(self.on_view_blacklist)
+        msg = ' '.join([
+            _("Preferred servers ({}) are servers you have designated "
+              "as reliable and/or trustworthy.").format(
+                  ServerFlag.Symbol[ServerFlag.Preferred]),
+            _("Initially, the preferred list is the hard-coded list "
+              "of known-good servers vetted by the Electron Cash "
+              "developers."),
+            _("You can add or remove any server from this list and "
+              "optionally elect to only connect to preferred "
+              "servers."),
+            "\n\n" + _("Banned servers ({}) are servers deemed "
+                       "unreliable and/or untrustworthy, and so they "
+                       "will never be connected-to by Electron "
+                       "Cash.").format(
+                           ServerFlag.Symbol[ServerFlag.Banned])
+        ])
+        grid.addWidget(self.legend_label, row, 0, 1, 4)
+        grid.addWidget(HelpButton(msg), row, 4)
+        row += 1
+
+        # Connected nodes
+        self.nodes_list_widget = NodesListWidget(self)
+        grid.addWidget(self.nodes_list_widget, row, 0, 1, 5)
+        row += 1
+
+        # Close button
+        close_but = CloseButton(self)
+        close_but.setDefault(False)
+        close_but.setAutoDefault(False)
+        vbox.addLayout(Buttons(close_but))
+
+        # Network callbacks and timers
+        self.network_updated_signal.connect(self.on_update)
+        self.workaround_timer = QTimer()
+        self.workaround_timer.timeout.connect(self._workaround_update)
+        self.workaround_timer.setSingleShot(True)
+        network.register_callback(
+            self.on_network,
+            ['blockchain_updated', 'interfaces', 'status'])
+        self.refresh_timer = QTimer(self)
+        self.refresh_timer.timeout.connect(
+            self.network_updated_signal.emit)
+        self.refresh_timer.setInterval(500)
+
+        network.server_list_updated.append_weak(
+            self.on_server_list_updated)
+
+        self.update()
+
+    # --- Lifecycle ---
+
+    def on_destroyed(self, obj):
+        if self.is_destroyed:
+            return
+        OnDestroyedMixin.on_destroyed(self, obj)
+        network = self.weak_network and self.weak_network()
+        if network:
+            network.unregister_callback(self.on_network)
+            print_error("NetworkOverviewDialog: unregistered callback")
+
+    def on_network(self, event, *args):
+        '''May run in network thread.'''
+        if not self.is_destroyed:
+            self.network_updated_signal.emit()
+
+    @rate_limited(0.333)
+    def on_update(self):
+        '''Always runs in main GUI thread.'''
+        self.update()
+
+    @in_main_thread
+    def on_server_list_updated(self):
+        self.update()
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        if e.isAccepted():
+            self.workaround_timer.start(500)
+            self.refresh_timer.start()
+
+    def hideEvent(self, e):
+        super().hideEvent(e)
+        if not self.isVisible():
+            self.workaround_timer.stop()
+            self.refresh_timer.stop()
+
+    def closeEvent(self, e):
+        # Warn if non-SSL mode when closing
+        use_tor = self.config.get('tor_use', False)
+        if (not self.ssl_cb.isChecked()
+                and not use_tor
+                and not self.server_host.text().lower().endswith(
+                    '.onion')
+                and not self.config.get('non_ssl_noprompt', False)):
+            ok, chk = self.question(
+                ''.join([
+                    _("You have selected non-SSL mode for your "
+                      "server settings."), ' ',
+                    _("Using this mode presents a potential "
+                      "security risk."), '\n\n',
+                    _("Are you sure you wish to proceed?")]),
+                detail_text=''.join([
+                    _("All of your traffic to the blockchain "
+                      "servers will be sent unencrypted."), ' ',
+                    _("Additionally, you may also be vulnerable "
+                      "to man-in-the-middle attacks."), ' ',
+                    _("It is strongly recommended that you go "
+                      "back and enable SSL mode."),
+                ]),
+                rich_text=False,
+                title=_('Security Warning'),
+                icon=QMessageBox.Critical,
+                checkbox_text=_("Don't ask me again"))
+            if chk:
+                self.config.set_key('non_ssl_noprompt', True)
+            if not ok:
+                e.ignore()
+                return
+        super().closeEvent(e)
+
+    def _workaround_update(self):
+        QDialog.update(self)
+
+    # --- Server/protocol management ---
+
+    def get_set_server_flags(self):
+        return (self.config.is_modifiable('server'),
+                (not self.autoconnect_cb.isChecked()
+                 and not self.preferred_only_cb.isChecked())
+                )
+
+    def can_set_server(self, server):
+        return bool(
+            self.get_set_server_flags()[0]
+            and not self.network.server_is_blacklisted(server)
+            and (not self.network.is_whitelist_only()
+                 or self.network.server_is_whitelisted(server))
+        )
+
+    def enable_set_server(self):
+        modifiable, notauto = self.get_set_server_flags()
+        if modifiable:
+            self.server_host.setEnabled(notauto)
+            self.server_port.setEnabled(notauto)
+        else:
+            for w in [self.server_host, self.server_port]:
+                w.setEnabled(False)
+
+    def set_protocol(self, protocol):
+        if protocol != self.protocol:
+            self.protocol = protocol
+
+    def change_protocol(self, use_ssl):
+        p = 's' if use_ssl else 't'
+        host = self.server_host.text()
+        pp = self.servers.get(host, networks.net.DEFAULT_PORTS)
+        if p not in pp.keys():
+            p = list(pp.keys())[0]
+        port = pp[p]
+        self.server_host.setText(host)
+        self.server_port.setText(port)
+        self.set_protocol(p)
+        self.set_server()
+
+    def set_server(self, onion_hack=False):
+        host, port, protocol, proxy, auto_connect = \
+            self.network.get_parameters()
+        host = str(self.server_host.text())
+        port = str(self.server_port.text())
+        protocol = 's' if self.ssl_cb.isChecked() else 't'
+        if onion_hack:
+            if host.lower().endswith('.onion'):
+                protocol = 't'
+                self.ssl_cb.setChecked(False)
+        auto_connect = self.autoconnect_cb.isChecked()
+        self.network.set_parameters(
+            host, port, protocol, proxy, auto_connect)
+
+    def change_server(self, host, protocol):
+        pp = self.servers.get(host, networks.net.DEFAULT_PORTS)
+        if protocol and protocol not in protocol_letters:
+            protocol = None
+        if protocol:
+            port = pp.get(protocol)
+            if port is None:
+                protocol = None
+        if not protocol:
+            if 's' in pp.keys():
+                protocol = 's'
+                port = pp.get(protocol)
+            else:
+                protocol = list(pp.keys())[0]
+                port = pp.get(protocol)
+        self.server_host.setText(host)
+        self.server_port.setText(port)
+        self.ssl_cb.setChecked(protocol == 's')
+
+    def follow_branch(self, index):
+        self.network.follow_chain(index)
+        self.update()
+
+    def follow_server(self, server):
+        self.network.switch_to_interface(server)
+        host, port, protocol, proxy, auto_connect = \
+            self.network.get_parameters()
+        host, port, protocol = deserialize_server(server)
+        self.network.set_parameters(
+            host, port, protocol, proxy, auto_connect)
+        self.update()
+
+    # --- Whitelist / Blacklist ---
+
+    def remove_pinned_certificate(self, server):
+        return self.network.remove_pinned_certificate(server)
+
+    def set_blacklisted(self, server, bl):
+        self.network.server_set_blacklisted(server, bl, True)
+        self.set_server()
+        self.update()
+
+    def set_whitelisted(self, server, flag):
+        self.network.server_set_whitelisted(server, flag, True)
+        self.set_server()
+        self.update()
+
+    def set_whitelisted_only(self, b):
+        self.network.set_whitelist_only(b)
+        self.set_server()
+        self.update()
+
+    def on_view_blacklist(self, ignored):
+        '''Show the ban list dialog.'''
+        bl = sorted(self.network.blacklisted_servers)
+        if not bl:
+            self.show_error(_("Server ban list is empty!"))
+            return
+        d = WindowModalDialog(
+            self.top_level_window(), _("Banned Servers"))
+        vbox = QVBoxLayout(d)
+        vbox.addWidget(
+            QLabel(_("Banned Servers") + " ({})".format(len(bl))))
+        tree = QTreeWidget()
+        tree.setHeaderLabels([_('Host'), _('Port')])
+        for s in bl:
+            host, port, protocol = deserialize_server(s)
+            item = QTreeWidgetItem([host, str(port)])
+            item.setFlags(Qt.ItemIsEnabled)
+            tree.addTopLevelItem(item)
+        tree.setIndentation(3)
+        h = tree.header()
+        h.setStretchLastSection(False)
+        h.setSectionResizeMode(0, QHeaderView.Stretch)
+        h.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        vbox.addWidget(tree)
+
+        clear_but = QPushButton(_("Clear ban list"))
+        weakSelf = Weak.ref(self)
+        weakD = Weak.ref(d)
+        clear_but.clicked.connect(
+            lambda: weakSelf() and weakSelf().on_clear_blacklist()
+            and weakD().reject())
+        vbox.addLayout(Buttons(clear_but, CloseButton(d)))
+        d.exec_()
+
+    def on_clear_blacklist(self):
+        bl = list(self.network.blacklisted_servers)
+        blen = len(bl)
+        if self.question(
+                _("Clear all {} servers from the ban list?").format(
+                    blen)):
+            for i, s in enumerate(bl):
+                self.network.server_set_blacklisted(
+                    s, False, save=bool(i + 1 == blen))
+            self.update()
+            return True
+        return False
+
+    # --- Main update ---
+
+    def update(self):
+        host, port, protocol, proxy_config, auto_connect = \
+            self.network.get_parameters()
+        preferred_only = self.network.is_whitelist_only()
+
+        # Update hidden state widgets
+        self.autoconnect_cb.setChecked(auto_connect)
+        self.ssl_cb.setChecked(protocol == 's')
+        self.preferred_only_cb.setChecked(preferred_only)
+
+        if (not self.server_host.hasFocus()
+                and not self.server_port.hasFocus()):
+            self.server_host.setText(host)
+            self.server_port.setText(port)
+
+        self.servers = self.network.get_servers()
+        self.set_protocol(protocol)
+
+        # Server label
+        host_display = (
+            self.network.interface.host
+            if self.network.interface
+            else pgettext('Referencing server', 'None'))
+        is_onion = host_display.lower().endswith('.onion')
+        if (is_onion and host_display in self.servers
+                and 'display' in self.servers[host_display]):
+            host_display = (
+                self.servers[host_display]['display'] + ' (.onion)')
+        self.server_label.setText(host_display)
+
+        # Protocol suffix
+        def protocol_suffix():
+            if protocol == 't':
+                return '  (non-SSL)'
+            elif protocol == 's':
+                return '  [SSL]'
+            return ''
+
+        # Server list label
+        server_list_txt = (
+            (_('Server peers')
+             if self.network.is_connected()
+             else _('Servers'))
+            + " ({})".format(len(self.servers)))
+        server_list_txt += protocol_suffix()
+        self.server_list_label.setText(server_list_txt)
+
+        # Legend
+        if self.network.blacklisted_servers:
+            bl_srv_ct_str = (
+                ' ({}) <a href="ViewBanList">{}</a>'.format(
+                    len(self.network.blacklisted_servers),
+                    _("View ban list...")))
+        else:
+            bl_srv_ct_str = " (0)<i> </i>"
+        servers_whitelisted = (
+            set(get_eligible_servers(self.servers, protocol))
+            .intersection(self.network.whitelisted_servers)
+            - self.network.blacklisted_servers)
+        self.legend_label.setText(
+            ServerFlag.Symbol[ServerFlag.Preferred] + "="
+            + _("Preferred")
+            + " ({})".format(len(servers_whitelisted))
+            + "&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"
+            + ServerFlag.Symbol[ServerFlag.Banned] + "="
+            + _("Banned") + bl_srv_ct_str)
+
+        # Server list
+        use_tor = self.config.get('tor_use', False)
+        self.servers_list.update(
+            self.network, self.servers, self.protocol, use_tor)
+        self.enable_set_server()
+
+        # Height
+        height_str = "%d " % (
+            self.network.get_local_height()) + _('blocks')
+        self.height_label.setText(height_str)
+
+        # Status
+        n = len(self.network.get_interfaces())
+        status = (
+            _("Connected to %d nodes.") % n
+            if n else _("Not connected"))
+        if n:
+            status += protocol_suffix()
+        self.status_label.setText(status)
+
+        # Chain split
+        chains = self.network.get_blockchains()
+        if len(chains) > 1:
+            chain = self.network.blockchain()
+            checkpoint = chain.get_base_height()
+            name = chain.get_name()
+            msg = (_('Chain split detected at block %d')
+                   % checkpoint + '\n')
+            msg += (
+                (_('You are following branch')
+                 if auto_connect
+                 else _('Your server is on branch'))
+                + ' ' + name)
+            msg += ' (%d %s)' % (
+                chain.get_branch_size(), _('blocks'))
+        else:
+            msg = ''
+        self.split_label.setText(msg)
+
+        # Pending requests
+        self.reqs_label.setText(
+            str((self.network.interface
+                 and len(
+                     self.network.interface.unanswered_requests))
+                or 0))
+
+        # Connected nodes
+        self.nodes_list_widget.update(self.network, self.servers)
+
+
+class CashFusionSettingsDialog(OnDestroyedMixin, QDialog):
+    '''Standalone modeless dialog wrapping a CashFusion SettingsWidget.'''
+
+    def __init__(self, settings_widget):
+        QDialog.__init__(self)
+        OnDestroyedMixin.__init__(self)
+        self.setWindowTitle(_('CashFusion Settings'))
+        self.setMinimumSize(500, 400)
+        vbox = QVBoxLayout(self)
+        vbox.addWidget(settings_widget)
+        close_but = CloseButton(self)
+        close_but.setDefault(False)
+        close_but.setAutoDefault(False)
+        vbox.addLayout(Buttons(close_but))
+        # Close dialog if the widget is destroyed (e.g. plugin disabled)
+        settings_widget.destroyed.connect(self.close)
 
 
 class NodesListWidget(QTreeWidget):
@@ -490,26 +1030,7 @@ class NetworkChoiceLayout(QObject, OnDestroyedMixin, PrintError):
         self.ssl_help = HelpButton(_('SSL is used to authenticate and encrypt your connections with the blockchain servers.') + "\n\n"
                                    + _('Due to potential security risks, you may only disable SSL when using a Tor Proxy.'))
         grid.addWidget(self.ssl_help, 2, 4)
-
-        grid.addWidget(QLabel(_('Server') + ':'), 3, 0)
-        grid.addWidget(self.server_host, 3, 1, 1, 2)
-        grid.addWidget(self.server_port, 3, 3)
-
-        self.server_list_label = label = QLabel('') # will get set by self.update()
-        grid.addWidget(label, 4, 0, 1, 5)
-        self.servers_list = ServerListWidget(self)
-        grid.addWidget(self.servers_list, 5, 0, 1, 5)
-        self.legend_label = label = WWLabel('') # will get populated with the legend by self.update()
-        label.setTextInteractionFlags(label.textInteractionFlags() & (~Qt.TextSelectableByMouse))  # disable text selection by mouse here
-        self.legend_label.linkActivated.connect(self.on_view_blacklist)
-        grid.addWidget(label, 6, 0, 1, 4)
-        msg = ' '.join([
-            _("Preferred servers ({}) are servers you have designated as reliable and/or trustworthy.").format(ServerFlag.Symbol[ServerFlag.Preferred]),
-            _("Initially, the preferred list is the hard-coded list of known-good servers vetted by the Electron Cash developers."),
-            _("You can add or remove any server from this list and optionally elect to only connect to preferred servers."),
-            "\n\n"+_("Banned servers ({}) are servers deemed unreliable and/or untrustworthy, and so they will never be connected-to by Electron Cash.").format(ServerFlag.Symbol[ServerFlag.Banned])
-        ])
-        grid.addWidget(HelpButton(msg), 6, 4)
+        grid.setRowStretch(3, 1)
 
         # Proxy tab
         grid = QGridLayout(proxy_tab)
@@ -636,53 +1157,40 @@ class NetworkChoiceLayout(QObject, OnDestroyedMixin, PrintError):
 
         self.reqs_label = QLabel('')
         self.reqs_label.setTextInteractionFlags(self.height_label.textInteractionFlags() | Qt.TextSelectableByMouse)
-        msg = _('The number of unanswered network requests.\n\n'
-                "You can configure:\n\n"
-                "    - Limit: maximum request backlog size\n"
-                "    - ChunkSize: requests to enqueue every 100ms\n\n"
-                "If the connection drops when synchronizing, you may wish "
-                "to reduce these values to throttle requests to the server.")
+        msg = _('The number of unanswered network requests.')
         grid.addWidget(QLabel(_('Pending requests') + ':'), row, 0)
-        hbox = QHBoxLayout()
-        hbox.addWidget(self.reqs_label)
-        hbox.setContentsMargins(0, 0, 12, 0)
-        hbox.addWidget(QLabel(_("Limit:")))
-        self.req_max_sb = sb = QSpinBox()
-        sb.setRange(1, 2000)
-        sb.setFocusPolicy(Qt.TabFocus|Qt.ClickFocus|Qt.WheelFocus)
-        hbox.addWidget(sb)
-        hbox.addWidget(QLabel(_("ChunkSize:")))
-        self.req_chunk_sb = sb = QSpinBox()
-        sb.setRange(1, 100)
-        sb.setFocusPolicy(Qt.TabFocus|Qt.ClickFocus|Qt.WheelFocus)
-        hbox.addWidget(sb)
-        but = QPushButton(_("Reset"))
-        f = but.font()
-        f.setPointSize(f.pointSize()-2)
-        but.setFont(f)
-        but.setDefault(False); but.setAutoDefault(False)
-        hbox.addWidget(but)
-        grid.addLayout(hbox, row, 1, 1, 3)
-        grid.setAlignment(hbox, Qt.AlignLeft|Qt.AlignVCenter)
-        grid.setColumnStretch(3, 1)
+        grid.addWidget(self.reqs_label, row, 1, 1, 3)
         grid.addWidget(HelpButton(msg), row, 4)
         row += 1
-        def req_max_changed(val):
-            Interface.set_req_throttle_params(self.config, max=val)
-        def req_chunk_changed(val):
-            Interface.set_req_throttle_params(self.config, chunkSize=val)
-        def req_defaults():
-            p = Interface.req_throttle_default
-            Interface.set_req_throttle_params(self.config, max=p.max, chunkSize=p.chunkSize)
-            self.update()
-        but.clicked.connect(req_defaults)
-        self.req_max_sb.valueChanged.connect(req_max_changed)
-        self.req_chunk_sb.valueChanged.connect(req_chunk_changed)
 
         self.split_label = QLabel('')
         self.split_label.setTextInteractionFlags(self.split_label.textInteractionFlags() | Qt.TextSelectableByMouse)
         grid.addWidget(self.split_label, row, 0, 1, 3)
-        row += 2
+        row += 1
+
+        grid.addWidget(QLabel(_('Server') + ':'), row, 0)
+        grid.addWidget(self.server_host, row, 1, 1, 2)
+        grid.addWidget(self.server_port, row, 3)
+        row += 1
+
+        self.server_list_label = QLabel('')  # will get set by self.update()
+        grid.addWidget(self.server_list_label, row, 0, 1, 5)
+        row += 1
+        self.servers_list = ServerListWidget(self)
+        grid.addWidget(self.servers_list, row, 0, 1, 5)
+        row += 1
+        self.legend_label = WWLabel('')  # will get populated with the legend by self.update()
+        self.legend_label.setTextInteractionFlags(self.legend_label.textInteractionFlags() & (~Qt.TextSelectableByMouse))
+        self.legend_label.linkActivated.connect(self.on_view_blacklist)
+        msg = ' '.join([
+            _("Preferred servers ({}) are servers you have designated as reliable and/or trustworthy.").format(ServerFlag.Symbol[ServerFlag.Preferred]),
+            _("Initially, the preferred list is the hard-coded list of known-good servers vetted by the Electron Cash developers."),
+            _("You can add or remove any server from this list and optionally elect to only connect to preferred servers."),
+            "\n\n"+_("Banned servers ({}) are servers deemed unreliable and/or untrustworthy, and so they will never be connected-to by Electron Cash.").format(ServerFlag.Symbol[ServerFlag.Banned])
+        ])
+        grid.addWidget(self.legend_label, row, 0, 1, 4)
+        grid.addWidget(HelpButton(msg), row, 4)
+        row += 1
 
         self.nodes_list_widget = NodesListWidget(self)
         grid.addWidget(self.nodes_list_widget, row, 0, 1, 5)
@@ -847,9 +1355,6 @@ class NetworkChoiceLayout(QObject, OnDestroyedMixin, PrintError):
         self.split_label.setText(msg)
 
         self.reqs_label.setText(str((self.network.interface and len(self.network.interface.unanswered_requests)) or 0))
-        params = Interface.get_req_throttle_params(self.config)
-        self.req_max_sb.setValue(params.max)
-        self.req_chunk_sb.setValue(params.chunkSize)
 
         self.nodes_list_widget.update(self.network, self.servers)
 

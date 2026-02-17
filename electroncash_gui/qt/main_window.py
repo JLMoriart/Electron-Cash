@@ -125,6 +125,7 @@ class ButtonTabWidget(QWidget):
         super().__init__(parent)
         self._tabs = []  # list of (widget, icon, text, button_or_None)
         self._current = -1
+        self._force_hidden_buttons = set()  # lowercase tab names that must never show a button
         self._button_bar = QHBoxLayout()
         self._button_bar.setContentsMargins(0, 0, 0, 0)
         self._button_bar.addStretch(1)
@@ -152,6 +153,10 @@ class ButtonTabWidget(QWidget):
         if text is None:
             text = icon_or_text
             icon_or_text = QIcon()
+        # Force hidden if the tab name matches a suppressed entry
+        if hasattr(self, '_force_hidden_buttons') and isinstance(text, str):
+            if text.lower() in self._force_hidden_buttons:
+                hidden_button = True
         btn = None
         if not hidden_button:
             btn = QPushButton(icon_or_text, text)
@@ -166,8 +171,14 @@ class ButtonTabWidget(QWidget):
             self.setCurrentIndex(len(self._tabs) - 1)
 
     def insertTab(self, index, widget, icon, text):
-        btn = QPushButton(icon, text)
-        self._style_button(btn)
+        # Force hidden if the tab name matches a suppressed entry
+        force_hidden = (hasattr(self, '_force_hidden_buttons')
+                        and isinstance(text, str)
+                        and text.lower() in self._force_hidden_buttons)
+        btn = None
+        if not force_hidden:
+            btn = QPushButton(icon, text)
+            self._style_button(btn)
         self._tabs.insert(index, (widget, icon, text, btn))
         self._content_layout.addWidget(widget)
         widget.hide()
@@ -242,6 +253,66 @@ class ButtonTabWidget(QWidget):
         pass
 
 
+class CollapsibleSection(QWidget):
+    """A collapsible accordion section with a clickable header bar.
+
+    The header shows an arrow indicator (▶ collapsed / ▼ expanded) and bold
+    title text.  Clicking the header toggles visibility of the content area.
+    Use content_layout() to add child widgets to the collapsible area.
+    """
+
+    def __init__(self, title, parent=None, expanded=True):
+        super().__init__(parent)
+        self._expanded = expanded
+        self._title = title
+
+        # Header button with arrow + bold title
+        self._header = QPushButton()
+        self._header.setCursor(Qt.PointingHandCursor)
+        self._update_header_text()
+        self._header.clicked.connect(self._on_toggle)
+
+        # Dark/light mode styles (same pattern as create_wallet_tab)
+        if ColorScheme.dark_scheme:
+            self._header.setStyleSheet(
+                "QPushButton { text-align: left; padding: 8px 12px; "
+                "border: 1px solid #555; border-radius: 4px; "
+                "background: #3a3a3a; font-size: 14px; font-weight: bold; }"
+                " QPushButton:hover { background: #444; }")
+        else:
+            self._header.setStyleSheet(
+                "QPushButton { text-align: left; padding: 8px 12px; "
+                "border: 1px solid #ccc; border-radius: 4px; "
+                "background: #f0f0f0; font-size: 14px; font-weight: bold; }"
+                " QPushButton:hover { background: #e0e0e0; }")
+
+        # Content area (indented)
+        self._content = QWidget()
+        self._content_layout = QVBoxLayout(self._content)
+        self._content_layout.setContentsMargins(20, 8, 8, 8)
+        self._content.setVisible(expanded)
+
+        # Main layout
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+        layout.addWidget(self._header)
+        layout.addWidget(self._content)
+
+    def _update_header_text(self):
+        arrow = "\u25BC" if self._expanded else "\u25B6"
+        self._header.setText(f"  {arrow}  {self._title}")
+
+    def _on_toggle(self):
+        self._expanded = not self._expanded
+        self._content.setVisible(self._expanded)
+        self._update_header_text()
+
+    def content_layout(self):
+        """Return the QVBoxLayout inside the content area."""
+        return self._content_layout
+
+
 class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
 
     # Note: self.clean_up_connections automatically detects signals named XXX_signal and disconnects them on window close.
@@ -310,6 +381,8 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         self.completions = QStringListModel()
 
         self.tabs = tabs = ButtonTabWidget(self)
+        # Suppress top-level buttons for tabs that are accessed via sub-menus
+        tabs._force_hidden_buttons = {'flipstarter'}
         self.send_tab = self.create_send_tab()
         self.receive_tab = self.create_receive_tab()
         self.addresses_tab = self.create_addresses_tab()
@@ -320,7 +393,14 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         self.contacts_tab = self.create_contacts_tab()
         self.converter_tab = self.create_converter_tab()
         self.home_tab = self.create_history_tab()
+        self.wallet_tab = self.create_wallet_tab()
+        self.tools_tab = self.create_tools_tab()
+        self.settings_tab = self.create_settings_tab()
         tabs.addTab(self.home_tab, QIcon(":icons/tab_history.png"), _('Home'))
+        tabs.addTab(self.token_tab, QIcon(":icons/tab_token.svg"), _('CashTokens'))
+        tabs.addTab(self.wallet_tab, QIcon(":icons/preferences.svg"), _('Wallet'))
+        tabs.addTab(self.tools_tab, QIcon(":icons/preferences.svg"), _('Tools'))
+        tabs.addTab(self.settings_tab, QIcon(":icons/preferences.svg"), _('Settings'))
         tabs.addTab(self.send_tab, QIcon(":icons/tab_send.png"), _('Send'), hidden_button=True)
         tabs.addTab(self.receive_tab, QIcon(":icons/tab_receive.png"), _('Receive'), hidden_button=True)
         # clears/inits the opreturn widgets
@@ -334,11 +414,18 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
             if self.config.get('show_{}_tab'.format(name), default):
                 tabs.addTab(tab, icon, description.replace("&", ""))
 
-        add_optional_tab(tabs, self.addresses_tab, QIcon(":icons/tab_addresses.png"), _("&Addresses"), "addresses")
-        add_optional_tab(tabs, self.utxo_tab, QIcon(":icons/tab_coins.png"), _("Co&ins"), "utxo")
-        add_optional_tab(tabs, self.token_tab, QIcon(":icons/tab_token.svg"), _("Cash&Tokens"), "token")
+        # Addresses, Coins, and Contacts are accessed via sub-menus; always hidden buttons
+        def add_hidden_tab(tabs, tab, icon, description, name):
+            tab.tab_icon = icon
+            tab.tab_description = description
+            tab.tab_pos = len(tabs)
+            tab.tab_name = name
+            tabs.addTab(tab, icon, description.replace("&", ""), hidden_button=True)
+
+        add_hidden_tab(tabs, self.addresses_tab, QIcon(":icons/tab_addresses.png"), _("&Addresses"), "addresses")
+        add_hidden_tab(tabs, self.utxo_tab, QIcon(":icons/tab_coins.png"), _("Co&ins"), "utxo")
         add_optional_tab(tabs, self.token_history_tab, QIcon(":icons/tab_token.svg"), _("Token History"), "token_history")
-        add_optional_tab(tabs, self.contacts_tab, QIcon(":icons/tab_contacts.png"), _("Con&tacts"), "contacts")
+        add_hidden_tab(tabs, self.contacts_tab, QIcon(":icons/tab_contacts.png"), _("Con&tacts"), "contacts")
         add_optional_tab(tabs, self.converter_tab, QIcon(":icons/tab_converter.svg"), _("Address Converter"), "converter")
         add_optional_tab(tabs, self.console_tab, QIcon(":icons/tab_console.png"), _("Con&sole"), "console", False)
 
@@ -494,7 +581,8 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         self.config.set_key('show_{}_tab'.format(tab.tab_name), show)
         item_format = _("Hide {tab_description}") if show else _("Show {tab_description}")
         item_text = item_format.format(tab_description=tab.tab_description)
-        tab.menu_action.setText(item_text)
+        if hasattr(tab, 'menu_action'):
+            tab.menu_action.setText(item_text)
         if show:
             # Find out where to place the tab
             index = len(self.tabs)
@@ -635,6 +723,9 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         self.seed_menu.setEnabled(self.wallet.has_seed())
         self.update_lock_icon()
         self.update_buttons_on_seed()
+        self._refresh_wallet_tab_buttons()
+        self._refresh_tools_tab_buttons()
+        self._refresh_settings_tab()
         self.update_console()
         self.clear_receive_tab()
         self.request_list.update()
@@ -676,6 +767,9 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         self.import_privkey_menu.setVisible(self.wallet.can_import_privkey())
         self.import_address_menu.setVisible(self.wallet.can_import_address())
         self.export_menu.setEnabled(bool(self.wallet.can_export()))
+        self._refresh_wallet_tab_buttons()
+        self._refresh_tools_tab_buttons()
+        self._refresh_settings_tab()
 
     def warn_if_watching_only(self):
         if self.wallet.is_watching_only():
@@ -853,11 +947,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
             tab.menu_action = view_menu.addAction(item_name, lambda: self.toggle_tab(tab))
 
         view_menu = menubar.addMenu(_("&View"))
-        add_toggle_action(view_menu, self.addresses_tab)
-        add_toggle_action(view_menu, self.utxo_tab)
-        add_toggle_action(view_menu, self.token_tab)
         add_toggle_action(view_menu, self.token_history_tab)
-        add_toggle_action(view_menu, self.contacts_tab)
         add_toggle_action(view_menu, self.converter_tab)
         add_toggle_action(view_menu, self.console_tab)
 
@@ -1256,6 +1346,1823 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         self.update_completions()
         self.labels_updated_signal.emit()
         self.labels_need_update.clear() # clear flag
+
+    def create_wallet_tab(self):
+        """Create the Wallet settings/options tab with left-right selection layout."""
+        widget = QWidget()
+
+        # --- Options data: (key, button_label, html_description) ---
+        options = [
+            ('password', _('Password / Encryption'),
+             _("<b>Password / Encryption</b>") + "<br><br>" +
+             _("Add, remove, or change this wallet's password, and decide "
+               "whether to encrypt the wallet file itself.")),
+
+            ('seed', _('Seed words'),
+             _("<b>Seed words</b>") + "<br><br>" +
+             _("Create a backup of your wallet by copying 12 words and "
+               "storing them somewhere private and safe. Make sure you are "
+               "somewhere private before revealing your seed words!")),
+
+            ('wallet_info', _('Other wallet info'),
+             _("<b>Other wallet info</b>") + "<br><br>" +
+             _("View what kind of wallet this is, its derivation path, "
+               "what type of script it uses, its Master Public Key (xPub), "
+               "and its Master Private Key (xPriv)")),
+
+            ('utxos', _('Coins (UTXOs)'),
+             _("<b>Coins (UTXOs)</b>") + "<br><br>" +
+             _("Freeze, unfreeze, or spend from specific unspent transaction "
+               "outputs. (UTXOs)")),
+
+            ('addresses', _('Addresses'),
+             _("<b>Addresses</b>") + "<br><br>" +
+             _("Access all of this wallet's previously used or created addresses.")),
+
+            ('import_export', _('Import/export Wallet data'),
+             _("<b>Import/export Wallet data</b>") + "<br><br>" +
+             _("Import/export your address book, labels, invoices, and "
+               "transaction history.")),
+
+            ('scan_gap', _('Scan addresses beyond gap'),
+             _("<b>Scan addresses beyond gap</b>") + "<br><br>" +
+             _("Your wallet can generate a practically infinite number of "
+               "addresses. When calculating your balance, Electron Cash scans "
+               "through your addresses until it reaches 20 addresses in a row "
+               "with no transaction history. If this wallet has funds on "
+               "addresses beyond a gap like that, use this tool to detect them.")),
+
+            ('rebuild', _('Rebuild wallet history'),
+             _("<b>Rebuild wallet history</b>") + "<br><br>" +
+             _("Re-download all of your wallet's transactions.")),
+        ]
+
+        # --- State ---
+        self._wallet_tab_selected = None
+
+        # --- Styles (same as installwizard.py Other Wallet Options) ---
+        if ColorScheme.dark_scheme:
+            btn_normal = ("QPushButton { text-align: left; padding: 10px 14px; "
+                          "border: 1px solid #555; border-radius: 6px; "
+                          "background: #3a3a3a; font-size: 14px; }")
+            btn_selected = ("QPushButton { text-align: left; padding: 10px 14px; "
+                            "border: 2px solid #5b9bd5; border-radius: 6px; "
+                            "background: #2a4a6a; font-size: 14px; color: white; }")
+        else:
+            btn_normal = ("QPushButton { text-align: left; padding: 10px 14px; "
+                          "border: 1px solid #ccc; border-radius: 6px; "
+                          "background: white; font-size: 14px; }")
+            btn_selected = ("QPushButton { text-align: left; padding: 10px 14px; "
+                            "border: 2px solid #3a7bd5; border-radius: 6px; "
+                            "background: #dbe8f6; font-size: 14px; color: #1a3a5c; }")
+
+        # --- Right panel: description label ---
+        self._wallet_tab_desc_label = desc_label = QLabel('')
+        desc_label.setWordWrap(True)
+        desc_label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        desc_label.setStyleSheet("font-size: 14px; padding: 12px;")
+        desc_label.setTextFormat(Qt.RichText)
+
+        # --- Left panel: option buttons ---
+        left_vbox = QVBoxLayout()
+        self._wallet_tab_buttons = buttons = []
+        for key, label, desc in options:
+            btn = QPushButton(label)
+            btn.setStyleSheet(btn_normal)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+            btn._wallet_tab_key = key  # store key for refresh logic
+
+            def make_click_handler(k, d, b):
+                def handler():
+                    self._wallet_tab_selected = k
+                    for ob in buttons:
+                        ob.setStyleSheet(btn_normal)
+                    b.setStyleSheet(btn_selected)
+                    desc_label.setText(d)
+                    self._wallet_tab_continue_btn.setEnabled(True)
+                return handler
+
+            btn.clicked.connect(make_click_handler(key, desc, btn))
+            left_vbox.addWidget(btn)
+            buttons.append(btn)
+        left_vbox.addStretch(1)
+
+        # --- Assemble left + right panels ---
+        hbox = QHBoxLayout()
+        left_widget = QWidget()
+        left_widget.setLayout(left_vbox)
+        left_widget.setFixedWidth(250)
+        hbox.addWidget(left_widget)
+        hbox.addWidget(desc_label, 1)
+
+        # --- Continue button (bottom-right) ---
+        self._wallet_tab_continue_btn = continue_btn = QPushButton(_('Continue'))
+        continue_btn.setEnabled(False)
+        continue_btn.clicked.connect(self._wallet_tab_continue_clicked)
+        bottom_hbox = QHBoxLayout()
+        bottom_hbox.addStretch(1)
+        bottom_hbox.addWidget(continue_btn)
+
+        # --- Main layout ---
+        main_vbox = QVBoxLayout(widget)
+        main_vbox.addLayout(hbox, 1)
+        main_vbox.addLayout(bottom_hbox)
+
+        return widget
+
+    def _wallet_tab_continue_clicked(self):
+        """Dispatch the selected wallet tab option to its handler."""
+        key = self._wallet_tab_selected
+        if key is None:
+            return
+        if key == 'password':
+            self.change_password_dialog()
+        elif key == 'seed':
+            self.show_seed_dialog()
+        elif key == 'wallet_info':
+            self.show_master_public_keys()
+        elif key == 'utxos':
+            self._show_or_toggle_tab(self.utxo_tab)
+        elif key == 'addresses':
+            self._show_or_toggle_tab(self.addresses_tab)
+        elif key == 'import_export':
+            self._show_import_export_dialog()
+        elif key == 'scan_gap':
+            self.scan_beyond_gap()
+        elif key == 'rebuild':
+            self.rebuild_history()
+
+    def _show_or_toggle_tab(self, tab):
+        """Show a tab, making it visible first if it was hidden."""
+        idx = self.tabs.indexOf(tab)
+        if idx == -1:
+            # Tab is hidden — show it via toggle_tab, which inserts at the correct position
+            self.toggle_tab(tab)
+            idx = self.tabs.indexOf(tab)
+        if idx >= 0:
+            self.tabs.setCurrentIndex(idx)
+
+    def _show_import_export_dialog(self):
+        """Show a sub-dialog with import/export wallet data actions."""
+        d = WindowModalDialog(self.top_level_window(), _('Import/Export Wallet Data'))
+        d.setMinimumSize(400, 350)
+        vbox = QVBoxLayout(d)
+        vbox.addWidget(QLabel(_("Select an action:")))
+
+        actions = [
+            (_('Import Labels'),             self.do_import_labels),
+            (_('Export Labels'),              self.do_export_labels),
+            (_('Import Contacts'),            lambda: self.contact_list.import_contacts()),
+            (_('Export Contacts'),             lambda: self.contact_list.export_contacts()),
+            (_('Import Invoices'),             lambda: self.invoice_list.import_invoices()),
+            (_('Export Transaction History'),  self.export_history_dialog),
+            (_('Export Token History'),        self.export_token_history_dialog),
+        ]
+
+        for label, func in actions:
+            btn = QPushButton(label)
+            btn.setStyleSheet("text-align: left; padding: 8px 12px;")
+            btn.setCursor(Qt.PointingHandCursor)
+
+            def make_handler(f):
+                def handler():
+                    d.accept()
+                    f()
+                return handler
+
+            btn.clicked.connect(make_handler(func))
+            vbox.addWidget(btn)
+
+        vbox.addStretch(1)
+        vbox.addLayout(Buttons(CloseButton(d)))
+        d.exec_()
+        d.setParent(None)
+
+    def _refresh_wallet_tab_buttons(self):
+        """Update wallet tab button availability based on wallet capabilities."""
+        if not hasattr(self, '_wallet_tab_buttons'):
+            return
+        for btn in self._wallet_tab_buttons:
+            key = btn._wallet_tab_key
+            if key == 'password':
+                btn.setVisible(self.wallet.can_change_password())
+            elif key == 'seed':
+                btn.setVisible(self.wallet.has_seed())
+            elif key == 'scan_gap':
+                btn.setEnabled(bool(self.wallet.is_deterministic() and self.network))
+            elif key == 'rebuild':
+                btn.setEnabled(bool(self.network))
+            else:
+                btn.setVisible(True)
+                btn.setEnabled(True)
+
+    def create_tools_tab(self):
+        """Create the Tools tab with left-right selection layout, same pattern as create_wallet_tab."""
+        widget = QWidget()
+
+        # --- Options data: (key, button_label, html_description) ---
+        options = [
+            ('cashfusion', _('CashFusion'),
+             _("<b>CashFusion</b>") + "<br><br>" +
+             _("Mix your BCH with other CashFusion users to enhance your "
+               "privacy. CashFusion is the most popular privacy tool on "
+               "Bitcoin Cash, with hundreds of daily users.")),
+
+            ('flipstarter', _('Flipstarter'),
+             _("<b>Flipstarter</b>") + "<br><br>" +
+             _("Create or participate in a Flipstarter campaign.")),
+
+            ('address_book', _('Address Book'),
+             _("<b>Address Book</b>") + "<br><br>" +
+             _("Manage your contacts.")),
+
+            ('encrypt_decrypt', _('Encrypt/Decrypt message'),
+             _("<b>Encrypt/Decrypt message</b>") + "<br><br>" +
+             _("Encrypt or decrypt a message using Bitcoin Cash cryptography.")),
+
+            ('sign_verify', _('Sign message/verify signature'),
+             _("<b>Sign message/verify signature</b>") + "<br><br>" +
+             _("Create or verify a cryptographic signature. This feature can "
+               "be used to prove that you own a particular Bitcoin Cash "
+               "address, since only the owner of an address is able to create "
+               "a valid signature for it.")),
+
+            ('sweep', _('Sweep private keys'),
+             _("<b>Sweep private keys</b>") + "<br><br>" +
+             _("Transfer all the Bitcoin Cash from a private key, a seed "
+               "phrase, or a master key into this wallet.")),
+
+            ('plugins', _('Plugin manager'),
+             _("<b>Plugin manager</b>") + "<br><br>" +
+             _("Install and manage plugins for Electron Cash.")),
+
+            ('load_tx', _('Load a transaction'),
+             _("<b>Load a transaction</b>") + "<br><br>" +
+             _("Load a transaction from a file, from text, from the "
+               "blockchain, or from a QR code for broadcasting, viewing, "
+               "or co-signing.")),
+
+            ('cashaccount', _('Lookup/register CashAccount'),
+             _("<b>Lookup/register CashAccount</b>") + "<br><br>" +
+             _("Look up a CashAccount or register a new CashAccount for one "
+               "of this wallet's addresses. CashAccounts work like an alias "
+               "for a Bitcoin Cash address.")),
+        ]
+
+        # --- State ---
+        self._tools_tab_selected = None
+
+        # --- Styles (same as wallet tab / installwizard.py Other Wallet Options) ---
+        if ColorScheme.dark_scheme:
+            btn_normal = ("QPushButton { text-align: left; padding: 10px 14px; "
+                          "border: 1px solid #555; border-radius: 6px; "
+                          "background: #3a3a3a; font-size: 14px; }")
+            btn_selected = ("QPushButton { text-align: left; padding: 10px 14px; "
+                            "border: 2px solid #5b9bd5; border-radius: 6px; "
+                            "background: #2a4a6a; font-size: 14px; color: white; }")
+        else:
+            btn_normal = ("QPushButton { text-align: left; padding: 10px 14px; "
+                          "border: 1px solid #ccc; border-radius: 6px; "
+                          "background: white; font-size: 14px; }")
+            btn_selected = ("QPushButton { text-align: left; padding: 10px 14px; "
+                            "border: 2px solid #3a7bd5; border-radius: 6px; "
+                            "background: #dbe8f6; font-size: 14px; color: #1a3a5c; }")
+
+        # --- Right panel: description label ---
+        self._tools_tab_desc_label = desc_label = QLabel('')
+        desc_label.setWordWrap(True)
+        desc_label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        desc_label.setStyleSheet("font-size: 14px; padding: 12px;")
+        desc_label.setTextFormat(Qt.RichText)
+
+        # --- Left panel: option buttons ---
+        left_vbox = QVBoxLayout()
+        self._tools_tab_buttons = buttons = []
+        for key, label, desc in options:
+            btn = QPushButton(label)
+            btn.setStyleSheet(btn_normal)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+            btn._tools_tab_key = key  # store key for refresh logic
+
+            def make_click_handler(k, d, b):
+                def handler():
+                    self._tools_tab_selected = k
+                    for ob in buttons:
+                        ob.setStyleSheet(btn_normal)
+                    b.setStyleSheet(btn_selected)
+                    desc_label.setText(d)
+                    self._tools_tab_continue_btn.setEnabled(True)
+                return handler
+
+            btn.clicked.connect(make_click_handler(key, desc, btn))
+            left_vbox.addWidget(btn)
+            buttons.append(btn)
+        left_vbox.addStretch(1)
+
+        # --- Assemble left + right panels ---
+        hbox = QHBoxLayout()
+        left_widget = QWidget()
+        left_widget.setLayout(left_vbox)
+        left_widget.setFixedWidth(250)
+        hbox.addWidget(left_widget)
+        hbox.addWidget(desc_label, 1)
+
+        # --- Continue button (bottom-right) ---
+        self._tools_tab_continue_btn = continue_btn = QPushButton(_('Continue'))
+        continue_btn.setEnabled(False)
+        continue_btn.clicked.connect(self._tools_tab_continue_clicked)
+        bottom_hbox = QHBoxLayout()
+        bottom_hbox.addStretch(1)
+        bottom_hbox.addWidget(continue_btn)
+
+        # --- Main layout ---
+        main_vbox = QVBoxLayout(widget)
+        main_vbox.addLayout(hbox, 1)
+        main_vbox.addLayout(bottom_hbox)
+
+        return widget
+
+    def _tools_tab_continue_clicked(self):
+        """Dispatch the selected tools tab option to its handler."""
+        key = self._tools_tab_selected
+        if key is None:
+            return
+        if key == 'cashfusion':
+            self.gui_object.show_cashfusion_settings_dialog(self)
+        elif key == 'flipstarter':
+            # Flipstarter is an external plugin that adds its own tab.
+            # Find and switch to that tab, or prompt user to install it.
+            flipstarter_idx = None
+            for i, (w, icon, text, btn) in enumerate(self.tabs._tabs):
+                if 'flipstarter' in text.lower():
+                    flipstarter_idx = i
+                    break
+            if flipstarter_idx is not None:
+                self.tabs.setCurrentIndex(flipstarter_idx)
+            else:
+                self.show_message(
+                    _("The Flipstarter plugin is not installed or not enabled. "
+                      "You can install it from the Plugin Manager."))
+        elif key == 'address_book':
+            self._show_or_toggle_tab(self.contacts_tab)
+        elif key == 'encrypt_decrypt':
+            self.encrypt_message()
+        elif key == 'sign_verify':
+            self.sign_verify_message()
+        elif key == 'sweep':
+            self.sweep_key_dialog()
+        elif key == 'plugins':
+            self.external_plugins_dialog()
+        elif key == 'load_tx':
+            self._show_load_transaction_dialog()
+        elif key == 'cashaccount':
+            self._show_cashaccount_dialog()
+
+    def _show_load_transaction_dialog(self):
+        """Show a sub-dialog with load transaction source options."""
+        d = WindowModalDialog(self.top_level_window(), _('Load Transaction'))
+        d.setMinimumSize(400, 250)
+        vbox = QVBoxLayout(d)
+        vbox.addWidget(QLabel(_("Load a transaction from:")))
+
+        actions = [
+            (_('From File'),            self.do_process_from_file),
+            (_('From Text'),            self.do_process_from_text),
+            (_('From the Blockchain'),  self.do_process_from_txid),
+            (_('From QR Code'),         self.read_tx_from_qrcode),
+        ]
+
+        for label, func in actions:
+            btn = QPushButton(label)
+            btn.setStyleSheet("text-align: left; padding: 8px 12px;")
+            btn.setCursor(Qt.PointingHandCursor)
+
+            def make_handler(f):
+                def handler():
+                    d.accept()
+                    f()
+                return handler
+
+            btn.clicked.connect(make_handler(func))
+            vbox.addWidget(btn)
+
+        vbox.addStretch(1)
+        vbox.addLayout(Buttons(CloseButton(d)))
+        d.exec_()
+        d.setParent(None)
+
+    def _show_cashaccount_dialog(self):
+        """Show a sub-dialog with Cash Account lookup/register options."""
+        d = WindowModalDialog(self.top_level_window(), _('Cash Accounts'))
+        d.setMinimumSize(400, 200)
+        vbox = QVBoxLayout(d)
+        vbox.addWidget(QLabel(_("Select an action:")))
+
+        actions = [
+            (_('Lookup Cash Account'),    self.lookup_cash_account_dialog),
+            (_('Register Cash Account'),  lambda: self.register_new_cash_account(addr='pick')),
+        ]
+
+        for label, func in actions:
+            btn = QPushButton(label)
+            btn.setStyleSheet("text-align: left; padding: 8px 12px;")
+            btn.setCursor(Qt.PointingHandCursor)
+
+            def make_handler(f):
+                def handler():
+                    d.accept()
+                    f()
+                return handler
+
+            btn.clicked.connect(make_handler(func))
+            vbox.addWidget(btn)
+
+        vbox.addStretch(1)
+        vbox.addLayout(Buttons(CloseButton(d)))
+        d.exec_()
+        d.setParent(None)
+
+    def _refresh_tools_tab_buttons(self):
+        """Update tools tab button availability based on wallet/network state."""
+        if not hasattr(self, '_tools_tab_buttons'):
+            return
+        for btn in self._tools_tab_buttons:
+            key = btn._tools_tab_key
+            if key == 'sweep':
+                # Sweep only makes sense if we're online
+                btn.setEnabled(bool(self.network))
+            else:
+                btn.setVisible(True)
+                btn.setEnabled(True)
+
+    def create_settings_tab(self):
+        """Create the Settings tab with collapsible accordion sections inside a scroll area."""
+        from . import exception_window as ew
+
+        # --- Outer widget: QScrollArea ---
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+
+        container = QWidget()
+        container.setFixedWidth(600)
+        container_layout = QVBoxLayout(container)
+        container_layout.setContentsMargins(16, 16, 16, 16)
+        container_layout.setSpacing(8)
+
+        # ====== General Section (expanded by default) ======
+        general = CollapsibleSection(_("General"), expanded=False)
+        cl = general.content_layout()
+
+        # 1. Enable Desktop Notifications (per-wallet)
+        row1 = QHBoxLayout()
+        self._settings_notify_cb = QCheckBox()
+        self._settings_notify_cb.setChecked(
+            bool(self.wallet.storage.get('gui_notify_tx', True)))
+        def on_notify(state):
+            self.wallet.storage.put('gui_notify_tx', bool(state))
+        self._settings_notify_cb.stateChanged.connect(on_notify)
+        notify_label = HelpLabel(
+            _("Enable Desktop Notifications"),
+            _("Payments to your wallet will trigger a notification through "
+              "your operating system's desktop"))
+        row1.addWidget(self._settings_notify_cb)
+        row1.addWidget(notify_label)
+        row1.addStretch(1)
+        cl.addLayout(row1)
+
+        # 2. Automatically check for updates (global)
+        row2 = QHBoxLayout()
+        auto_update_cb = QCheckBox()
+        auto_update_cb.setChecked(self.gui_object.has_auto_update_check())
+        def on_update_check(state):
+            self.gui_object.set_auto_update_check(state == Qt.Checked)
+        auto_update_cb.stateChanged.connect(on_update_check)
+        update_label = HelpLabel(
+            _("Automatically check for updates"),
+            _("Your wallet will notify you when there is an update available "
+              "for Electron Cash. (It will not be downloaded or installed "
+              "automatically, though. Click the notification and follow the "
+              "instructions to update.)"))
+        row2.addWidget(auto_update_cb)
+        row2.addWidget(update_label)
+        row2.addStretch(1)
+        cl.addLayout(row2)
+
+        # 3. Enable Crash Reporter (global)
+        row3 = QHBoxLayout()
+        crash_cb = QCheckBox()
+        crash_cb.setChecked(ew.is_enabled(self.config))
+        def on_crash_reporter(b):
+            ew.set_enabled(self.config, b)
+        crash_cb.clicked.connect(on_crash_reporter)
+        crash_label = HelpLabel(
+            _("Enable Crash Reporter"),
+            _("When Electron Cash encounters an internal error, you will be "
+              "given the option to report the error to the Electron Cash "
+              "developers. This helps us improve Electron Cash! No private "
+              "information is revealed in crash reports."))
+        row3.addWidget(crash_cb)
+        row3.addWidget(crash_label)
+        row3.addStretch(1)
+        cl.addLayout(row3)
+
+        container_layout.addWidget(general)
+
+        # ====== Outgoing Transactions Section ======
+        outgoing = CollapsibleSection(_("Outgoing Transactions"), expanded=False)
+        ol = outgoing.content_layout()
+
+        # 1. Spend only confirmed coins (global config)
+        orow1 = QHBoxLayout()
+        self._settings_confirmed_cb = QCheckBox()
+        self._settings_confirmed_cb.setChecked(
+            bool(self.config.get('confirmed_only', False)))
+        self._settings_confirmed_cb.clicked.connect(
+            lambda b: self.config.set_key('confirmed_only', bool(b)))
+        confirmed_label = HelpLabel(
+            _("Spend only confirmed coins"),
+            _("Normally you can send coins you receive before the receive "
+              "transaction has been included in a block. Check this option "
+              "to prevent sending coins that haven't yet gotten on "
+              "confirmation."))
+        orow1.addWidget(self._settings_confirmed_cb)
+        orow1.addWidget(confirmed_label)
+        orow1.addStretch(1)
+        ol.addLayout(orow1)
+
+        # 2. Use change addresses (per-wallet)
+        orow2 = QHBoxLayout()
+        self._settings_usechange_cb = QCheckBox()
+        self._settings_usechange_cb.setChecked(
+            bool(self.wallet.use_change))
+        usechange_label = HelpLabel(
+            _("Use change addresses"),
+            _("Using change addresses makes it harder for others to track "
+              "your transactions."))
+        orow2.addWidget(self._settings_usechange_cb)
+        orow2.addWidget(usechange_label)
+        orow2.addStretch(1)
+        ol.addLayout(orow2)
+
+        # 3. Use multiple change addresses at once (per-wallet)
+        orow3 = QHBoxLayout()
+        self._settings_multiple_cb = QCheckBox()
+        self._settings_multiple_cb.setChecked(
+            bool(self.wallet.multiple_change))
+        self._settings_multiple_cb.setEnabled(
+            bool(self.wallet.use_change))
+        multiple_label = HelpLabel(
+            _("Use multiple change addresses at once"),
+            _("Use up to 3 change addresses to break up large coin amounts "
+              "and obfuscate the recipient address. This results in larger "
+              "transactions, which cost more in mining fees."))
+        orow3.addWidget(self._settings_multiple_cb)
+        orow3.addWidget(multiple_label)
+        orow3.addStretch(1)
+        ol.addLayout(orow3)
+
+        # 4. Sign with Schnorr signatures (per-wallet)
+        orow4 = QHBoxLayout()
+        self._settings_schnorr_cb = QCheckBox()
+        self._settings_schnorr_cb.setChecked(
+            self.wallet.is_schnorr_enabled())
+        no_schnorr_reason = []
+        if not self.wallet.is_schnorr_possible(no_schnorr_reason):
+            self._settings_schnorr_cb.setEnabled(False)
+        schnorr_label = HelpLabel(
+            _("Sign with Schnorr signatures"),
+            _("Uncheck to fall back on legacy ECDSA signatures."))
+        orow4.addWidget(self._settings_schnorr_cb)
+        orow4.addWidget(schnorr_label)
+        orow4.addStretch(1)
+        ol.addLayout(orow4)
+
+        # 5. Enable OP_RETURN output (global config)
+        orow5 = QHBoxLayout()
+        self._settings_opreturn_cb = QCheckBox()
+        self._settings_opreturn_cb.setChecked(
+            bool(self.config.get('enable_opreturn')))
+        opreturn_label = HelpLabel(
+            _("Enable OP_RETURN output"),
+            _("Enable posting messages with OP_RETURN."))
+        self._settings_opreturn_cb.stateChanged.connect(
+            self.on_toggled_opreturn)
+        orow5.addWidget(self._settings_opreturn_cb)
+        orow5.addWidget(opreturn_label)
+        orow5.addStretch(1)
+        ol.addLayout(orow5)
+
+        # 6. Allow legacy p2sh in the send interface (global config)
+        orow6 = QHBoxLayout()
+        self._settings_legacy_p2sh_cb = QCheckBox()
+        self._settings_legacy_p2sh_cb.setChecked(
+            bool(self.config.get('allow_legacy_p2sh', False)))
+        prefix_char = '3' if not networks.net.TESTNET else '2'
+        legacy_p2sh_label = HelpLabel(
+            _("Allow legacy p2sh in the send interface"),
+            _("If enabled, you will be allowed to use legacy "
+              "'{prefix_char}...' style addresses in the send "
+              "interface.\nOtherwise you must use CashAddr for "
+              "p2sh in the UI.").format(prefix_char=prefix_char))
+        def on_legacy_p2sh(b):
+            self.config.set_key('allow_legacy_p2sh', bool(b))
+        self._settings_legacy_p2sh_cb.stateChanged.connect(on_legacy_p2sh)
+        orow6.addWidget(self._settings_legacy_p2sh_cb)
+        orow6.addWidget(legacy_p2sh_label)
+        orow6.addStretch(1)
+        ol.addLayout(orow6)
+
+        # --- Interaction: use_change toggles multiple_change enabled state ---
+        def on_usechange(b):
+            usechange_result = bool(b)
+            if self.wallet.use_change != usechange_result:
+                self.wallet.use_change = usechange_result
+                self.wallet.storage.put('use_change', usechange_result)
+            self._settings_multiple_cb.setEnabled(usechange_result)
+        self._settings_usechange_cb.clicked.connect(on_usechange)
+
+        def on_multiple(b):
+            multiple = bool(b)
+            if self.wallet.multiple_change != multiple:
+                self.wallet.multiple_change = multiple
+                self.wallet.storage.put('multiple_change', multiple)
+        self._settings_multiple_cb.clicked.connect(on_multiple)
+
+        self._settings_schnorr_cb.clicked.connect(
+            lambda b: self.wallet.set_schnorr_enabled(bool(b)))
+
+        # Handle CashShuffle forcing single change address
+        if self.force_use_single_change_addr:
+            self._settings_usechange_cb.setChecked(True)
+            self._settings_usechange_cb.setEnabled(False)
+            self._settings_multiple_cb.setChecked(False)
+            self._settings_multiple_cb.setEnabled(False)
+
+        container_layout.addWidget(outgoing)
+
+        # ====== Localization/Sources Section ======
+        from electroncash import web
+        loc = CollapsibleSection(_("Localization/Sources"), expanded=False)
+        ll = loc.content_layout()
+
+        # 1. Language (global config, plain label)
+        lrow1 = QHBoxLayout()
+        lang_label = QLabel(_("Language"))
+        self._settings_lang_combo = QComboBox()
+        from electroncash.i18n import languages, get_system_language_match, match_language
+        self._settings_language_keys = []
+        language_names = []
+        for lang_code, lang_def in languages.items():
+            self._settings_language_keys.append(lang_code)
+            lang_name = lang_def.name
+            if lang_code == '':
+                sys_lang = get_system_language_match()
+                if sys_lang:
+                    lang_name += f' [{languages[sys_lang].name}]'
+            language_names.append(lang_name)
+        self._settings_lang_combo.addItems(language_names)
+        conf_lang = self.config.get("language", '')
+        if conf_lang:
+            conf_lang = match_language(conf_lang)
+        try:
+            lang_idx = self._settings_language_keys.index(conf_lang)
+        except ValueError:
+            lang_idx = 0
+        self._settings_lang_combo.setCurrentIndex(lang_idx)
+        if not self.config.is_modifiable('language'):
+            lang_label.setEnabled(False)
+            self._settings_lang_combo.setEnabled(False)
+        def on_lang_changed(x):
+            lang_request = self._settings_language_keys[
+                self._settings_lang_combo.currentIndex()]
+            if lang_request != self.config.get('language'):
+                self.config.set_key("language", lang_request, True)
+                self.need_restart = True
+        self._settings_lang_combo.currentIndexChanged.connect(on_lang_changed)
+        self._settings_lang_combo.setMaximumWidth(250)
+        lrow1.addWidget(lang_label)
+        lrow1.addStretch(1)
+        lrow1.addWidget(self._settings_lang_combo)
+        ll.addLayout(lrow1)
+
+        # 2. Fiat currency (HelpLabel + QComboBox)
+        lrow2 = QHBoxLayout()
+        fiat_label = HelpLabel(
+            _("Fiat currency"),
+            _("Show the value of your Bitcoin Cash in your local currency, "
+              "using the current exchange rate. (This value will change over "
+              "time, as the exchange rate changes.)"))
+        self._settings_ccy_combo = QComboBox()
+        self._settings_ccy_combo.setMaximumWidth(250)
+        lrow2.addWidget(fiat_label)
+        lrow2.addStretch(1)
+        lrow2.addWidget(self._settings_ccy_combo)
+        ll.addLayout(lrow2)
+
+        # 3. Show historical rates (checkbox + HelpLabel)
+        lrow3 = QHBoxLayout()
+        self._settings_hist_cb = QCheckBox()
+        hist_label = HelpLabel(
+            _("Show historical rates"),
+            _("Your wallet will show the value of the Bitcoin Cash in your "
+              "local currency using the exchange rate at the time of the "
+              "transaction, instead of the current exchange rate."))
+        lrow3.addWidget(self._settings_hist_cb)
+        lrow3.addWidget(hist_label)
+        lrow3.addStretch(1)
+        ll.addLayout(lrow3)
+
+        # 4. Source (plain QLabel + QComboBox)
+        lrow4 = QHBoxLayout()
+        source_label = QLabel(_("Source"))
+        self._settings_ex_combo = QComboBox()
+        self._settings_ex_combo.setMaximumWidth(250)
+        lrow4.addWidget(source_label)
+        lrow4.addStretch(1)
+        lrow4.addWidget(self._settings_ex_combo)
+        ll.addLayout(lrow4)
+
+        # 5. Show fiat balance for addresses (checkbox + HelpLabel)
+        lrow5 = QHBoxLayout()
+        self._settings_fiat_address_cb = QCheckBox()
+        fiat_addr_label = HelpLabel(
+            _("Show fiat balance for addresses"),
+            _("Show the fiat value of your Bitcoin Cash balances in the "
+              "Addresses tab, using the current exchange rate."))
+        lrow5.addWidget(self._settings_fiat_address_cb)
+        lrow5.addWidget(fiat_addr_label)
+        lrow5.addStretch(1)
+        ll.addLayout(lrow5)
+
+        # 6. External block Explorer (HelpLabel + QComboBox)
+        lrow6 = QHBoxLayout()
+        be_label = HelpLabel(
+            _("External block Explorer"),
+            _("You can view more information about transactions and addresses "
+              "by viewing them in a third party \"block explorer\" website. "
+              "Choose which service you would like to open by default."))
+        self._settings_be_combo = QComboBox()
+        block_explorers = web.BE_sorted_list()
+        self._settings_block_explorers = block_explorers
+        self._settings_be_combo.addItems(block_explorers)
+        self._settings_be_combo.setCurrentIndex(
+            self._settings_be_combo.findText(web.BE_from_config(self.config)))
+        def on_be_changed(x):
+            be_result = self._settings_block_explorers[
+                self._settings_be_combo.currentIndex()]
+            self.config.set_key('block_explorer', be_result, True)
+        self._settings_be_combo.currentIndexChanged.connect(on_be_changed)
+        self._settings_be_combo.setMaximumWidth(250)
+        lrow6.addWidget(be_label)
+        lrow6.addStretch(1)
+        lrow6.addWidget(self._settings_be_combo)
+        ll.addLayout(lrow6)
+
+        # --- Fiat interaction logic ---
+        if self.fx and self.fx.is_supported():
+            def _update_settings_currencies():
+                if not self.fx:
+                    return
+                currencies = sorted(
+                    self.fx.get_currencies(self.fx.get_history_config()))
+                self._settings_ccy_combo.blockSignals(True)
+                self._settings_ccy_combo.clear()
+                self._settings_ccy_combo.addItems(
+                    [pgettext('Referencing Fiat currency', 'None')]
+                    + currencies)
+                if self.fx.is_enabled():
+                    self._settings_ccy_combo.setCurrentIndex(
+                        self._settings_ccy_combo.findText(
+                            self.fx.get_currency()))
+                self._settings_ccy_combo.blockSignals(False)
+
+            def _update_settings_history_cb():
+                if not self.fx:
+                    return
+                self._settings_hist_cb.setChecked(
+                    self.fx.get_history_config())
+                self._settings_hist_cb.setEnabled(self.fx.is_enabled())
+
+            def _update_settings_exchanges():
+                if not self.fx:
+                    return
+                b = self.fx.is_enabled()
+                self._settings_ex_combo.setEnabled(b)
+                if b:
+                    c = self.fx.get_currency()
+                    h = self.fx.get_history_config()
+                else:
+                    c, h = self.fx.default_currency, False
+                exchanges = self.fx.get_exchanges_by_ccy(c, h)
+                conf_exchange = self.fx.config_exchange()
+                self._settings_ex_combo.blockSignals(True)
+                self._settings_ex_combo.clear()
+                self._settings_ex_combo.addItems(sorted(exchanges))
+                idx = self._settings_ex_combo.findText(conf_exchange)
+                if idx < 0:
+                    idx = self._settings_ex_combo.findText(
+                        self.fx.default_exchange)
+                idx = 0 if idx < 0 else idx
+                if exchanges:
+                    self._settings_ex_combo.setCurrentIndex(idx)
+                self._settings_ex_combo.blockSignals(False)
+
+            def on_ccy_changed(hh):
+                if not self.fx:
+                    return
+                b = bool(self._settings_ccy_combo.currentIndex())
+                ccy = str(self._settings_ccy_combo.currentText()) if b else None
+                self.fx.set_enabled(b)
+                if b and ccy != self.fx.ccy:
+                    self.fx.set_currency(ccy)
+                _update_settings_history_cb()
+                _update_settings_fiat_address_cb()
+                _update_settings_exchanges()
+                self.update_fiat()
+
+            def on_ex_changed(idx):
+                exchange = str(self._settings_ex_combo.currentText())
+                if (self.fx and self.fx.is_enabled() and exchange
+                        and exchange != self.fx.exchange.name()):
+                    self.fx.set_exchange(exchange)
+
+            def on_hist_changed(checked):
+                if not self.fx:
+                    return
+                changed = (bool(self.fx.get_history_config())
+                           != bool(checked))
+                self.fx.set_history_config(checked)
+                _update_settings_exchanges()
+                self.history_list.refresh_headers()
+                if self.fx.is_enabled() and checked:
+                    self.fx.timeout = 0
+                    if changed:
+                        self.history_list.update()
+
+            def _update_settings_fiat_address_cb():
+                if not self.fx:
+                    return
+                self._settings_fiat_address_cb.setChecked(
+                    self.fx.get_fiat_address_config())
+                self._settings_fiat_address_cb.setEnabled(
+                    self.fx.is_enabled())
+
+            def on_fiat_address_changed(checked):
+                if not self.fx:
+                    return
+                self.fx.set_fiat_address_config(checked)
+                self.address_list.refresh_headers()
+                self.address_list.update()
+
+            # Store update helpers for _refresh_settings_tab
+            self._update_settings_currencies = _update_settings_currencies
+            self._update_settings_history_cb = _update_settings_history_cb
+            self._update_settings_fiat_address_cb = \
+                _update_settings_fiat_address_cb
+            self._update_settings_exchanges = _update_settings_exchanges
+
+            _update_settings_currencies()
+            _update_settings_history_cb()
+            _update_settings_fiat_address_cb()
+            _update_settings_exchanges()
+
+            self._settings_ccy_combo.currentIndexChanged.connect(
+                on_ccy_changed)
+            self._settings_hist_cb.stateChanged.connect(on_hist_changed)
+            self._settings_fiat_address_cb.stateChanged.connect(
+                on_fiat_address_changed)
+            self._settings_ex_combo.currentIndexChanged.connect(
+                on_ex_changed)
+        else:
+            # Fiat not supported on this chain
+            self._settings_hist_cb.setEnabled(False)
+            self._settings_fiat_address_cb.setEnabled(False)
+            self._settings_ccy_combo.setEnabled(False)
+            self._settings_ex_combo.setEnabled(False)
+            self._update_settings_currencies = None
+            self._update_settings_history_cb = None
+            self._update_settings_fiat_address_cb = None
+            self._update_settings_exchanges = None
+
+        container_layout.addWidget(loc)
+
+        # ====== Display Section ======
+        display = CollapsibleSection(_("User Interface"), expanded=False)
+        dl = display.content_layout()
+
+        # 1. Units/denomination (HelpLabel + QComboBox)
+        drow1 = QHBoxLayout()
+        units = util.base_unit_labels
+        unit_label = HelpLabel(
+            _("Units/denomination"),
+            _("Base unit of your wallet. "
+              "1 BCH = 1,000 mBCH = 1,000,000 bits. "
+              "This setting affects the fields in the send interface."))
+        self._settings_unit_combo = QComboBox()
+        self._settings_unit_combo.addItems(units)
+        self._settings_unit_combo.setCurrentIndex(
+            units.index(self.base_unit()))
+        self._settings_unit_combo.setMaximumWidth(250)
+        def on_unit_changed(x):
+            unit_result = units[self._settings_unit_combo.currentIndex()]
+            if self.base_unit() == unit_result:
+                return
+            edits = self.amount_e, self.fee_e, self.receive_amount_e
+            amounts = [edit.get_amount() for edit in edits]
+            dp = util.base_units.get(unit_result)
+            if dp is not None:
+                self.decimal_point = dp
+            else:
+                raise Exception('Unknown base unit')
+            self.config.set_key('decimal_point', self.decimal_point, True)
+            for edit, amount in zip(edits, amounts):
+                edit.setAmount(amount)
+            self.update_tabs()
+            self.update_status()
+        self._settings_unit_combo.currentIndexChanged.connect(on_unit_changed)
+        drow1.addWidget(unit_label)
+        drow1.addStretch(1)
+        drow1.addWidget(self._settings_unit_combo)
+        dl.addLayout(drow1)
+
+        # 2. Color theme (QLabel + QComboBox)
+        drow2 = QHBoxLayout()
+        theme_label = QLabel(_("Color theme"))
+        self._settings_theme_combo = QComboBox()
+        self._settings_theme_combo.addItem(_('Light'), 'default')
+        self._settings_theme_combo.addItem(_('Dark'), 'dark')
+        self._settings_theme_combo.setMaximumWidth(250)
+        theme_name = self.config.get('qt_gui_color_theme', 'default')
+        dark_available = self.gui_object.is_dark_theme_available()
+        if theme_name == 'dark' and not dark_available:
+            theme_name = 'default'
+        tidx = self._settings_theme_combo.findData(theme_name)
+        if tidx < 0:
+            tidx = 0
+        self._settings_theme_combo.setCurrentIndex(tidx)
+        if sys.platform in ('darwin',) and not dark_available:
+            err_msg = _("Color theme support is provided by macOS if using "
+                        "Mojave or above. Use the System Preferences to "
+                        "switch color themes.")
+        else:
+            err_msg = _("Dark theme is not available. Please install "
+                        "QDarkStyle to access this feature.")
+        def on_theme_changed(x):
+            item_data = self._settings_theme_combo.itemData(x)
+            if not dark_available and item_data == 'dark':
+                self.show_error(err_msg)
+                self._settings_theme_combo.setCurrentIndex(0)
+                return
+            self.config.set_key('qt_gui_color_theme', item_data, True)
+            if theme_name != item_data:
+                self.need_restart = True
+        self._settings_theme_combo.currentIndexChanged.connect(
+            on_theme_changed)
+        drow2.addWidget(theme_label)
+        drow2.addStretch(1)
+        drow2.addWidget(self._settings_theme_combo)
+        dl.addLayout(drow2)
+
+        # 3. Automatic high-DPI scaling (not on macOS)
+        if sys.platform not in ('darwin',):
+            drow3 = QHBoxLayout()
+            self._settings_hidpi_cb = QCheckBox()
+            self._settings_hidpi_cb.setChecked(
+                bool(self.config.get('qt_enable_highdpi', True)))
+            hidpi_label = HelpLabel(
+                _("Automatic high-DPI scaling"),
+                _("Enable/Disable this setting if you experience graphical "
+                  "glitches like text being cut off"))
+            if self.config.get('qt_disable_highdpi'):
+                self._settings_hidpi_cb.setChecked(False)
+                self._settings_hidpi_cb.setEnabled(False)
+                hidpi_label.setEnabled(False)
+            def on_hidpi_changed():
+                self.config.set_key('qt_enable_highdpi',
+                                    self._settings_hidpi_cb.isChecked())
+                self.need_restart = True
+            self._settings_hidpi_cb.stateChanged.connect(on_hidpi_changed)
+            drow3.addWidget(self._settings_hidpi_cb)
+            drow3.addWidget(hidpi_label)
+            drow3.addStretch(1)
+            dl.addLayout(drow3)
+
+        # 4. Font rendering (platform-specific)
+        if sys.platform in ('win32', 'cygwin'):
+            drow4 = QHBoxLayout()
+            self._settings_freetype_cb = QCheckBox()
+            self._settings_freetype_cb.setChecked(
+                self.gui_object.windows_qt_use_freetype)
+            self._settings_freetype_cb.setEnabled(
+                self.config.is_modifiable('windows_qt_use_freetype'))
+            freetype_label = HelpLabel(
+                _("Use FreeType for font rendering"),
+                _("Enable/Disable this setting if you experience font "
+                  "rendering glitches like blurred text or monochrome "
+                  "emoji characters"))
+            def on_freetype_changed():
+                self.gui_object.windows_qt_use_freetype = \
+                    self._settings_freetype_cb.isChecked()
+                self.need_restart = True
+            self._settings_freetype_cb.stateChanged.connect(
+                on_freetype_changed)
+            drow4.addWidget(self._settings_freetype_cb)
+            drow4.addWidget(freetype_label)
+            drow4.addStretch(1)
+            dl.addLayout(drow4)
+        elif sys.platform in ('linux',):
+            drow4 = QHBoxLayout()
+            self._settings_fontconfig_cb = QCheckBox()
+            self._settings_fontconfig_cb.setChecked(
+                self.gui_object.linux_qt_use_custom_fontconfig)
+            self._settings_fontconfig_cb.setEnabled(
+                self.config.is_modifiable('linux_qt_use_custom_fontconfig'))
+            fontconfig_label = HelpLabel(
+                _("Use custom fontconfig for emojis"),
+                _("Enable/Disable this setting if you experience font "
+                  "rendering glitches like blurred text or monochrome "
+                  "emoji characters"))
+            def on_fontconfig_changed():
+                self.gui_object.linux_qt_use_custom_fontconfig = \
+                    self._settings_fontconfig_cb.isChecked()
+                self.need_restart = True
+            self._settings_fontconfig_cb.stateChanged.connect(
+                on_fontconfig_changed)
+            drow4.addWidget(self._settings_fontconfig_cb)
+            drow4.addWidget(fontconfig_label)
+            drow4.addStretch(1)
+            dl.addLayout(drow4)
+
+        container_layout.addWidget(display)
+
+        # ====== Server/Connection Section ======
+        from electroncash.interface import Interface
+        server_sec = CollapsibleSection(_("Server/Connection"), expanded=False)
+        sl = server_sec.content_layout()
+
+        if self.network:
+            # 1. Two navigation buttons side-by-side
+            srow1 = QHBoxLayout()
+            net_status_btn = QPushButton(_("Servers/Network status"))
+            net_status_btn.setCursor(Qt.PointingHandCursor)
+            net_status_btn.clicked.connect(
+                lambda: self.gui_object.show_network_overview_dialog(
+                    self))
+            fusion_btn = QPushButton(_("CashFusion settings"))
+            fusion_btn.setCursor(Qt.PointingHandCursor)
+            fusion_btn.clicked.connect(
+                lambda: self.gui_object.show_cashfusion_settings_dialog(
+                    self))
+            srow1.addWidget(net_status_btn, 1)
+            srow1.addWidget(fusion_btn, 1)
+            sl.addLayout(srow1)
+
+            # 2. Select server automatically
+            srow2 = QHBoxLayout()
+            self._settings_autoconnect_cb = QCheckBox()
+            host, port, protocol, proxy, auto_connect = \
+                self.network.get_parameters()
+            self._settings_autoconnect_cb.setChecked(auto_connect)
+            self._settings_autoconnect_cb.setEnabled(
+                self.config.is_modifiable('auto_connect'))
+            autoconnect_label = QLabel(_("Select server automatically"))
+            def on_autoconnect(b):
+                host, port, protocol, proxy, _ = \
+                    self.network.get_parameters()
+                self.network.set_parameters(
+                    host, port, protocol, proxy, bool(b))
+            self._settings_autoconnect_cb.clicked.connect(on_autoconnect)
+            srow2.addWidget(self._settings_autoconnect_cb)
+            srow2.addWidget(autoconnect_label)
+            srow2.addStretch(1)
+            sl.addLayout(srow2)
+
+            # 3. Connect only to preferred servers
+            srow3 = QHBoxLayout()
+            self._settings_preferred_cb = QCheckBox()
+            self._settings_preferred_cb.setChecked(
+                self.network.is_whitelist_only())
+            self._settings_preferred_cb.setEnabled(
+                self.config.is_modifiable('whitelist_servers_only'))
+            preferred_label = QLabel(
+                _("Connect only to preferred servers"))
+            def on_preferred(b):
+                self.network.set_whitelist_only(b)
+                # Re-apply server params to recompute eligible servers
+                host, port, protocol, proxy, auto_connect = \
+                    self.network.get_parameters()
+                self.network.set_parameters(
+                    host, port, protocol, proxy, auto_connect)
+            self._settings_preferred_cb.clicked.connect(on_preferred)
+            srow3.addWidget(self._settings_preferred_cb)
+            srow3.addWidget(preferred_label)
+            srow3.addStretch(1)
+            sl.addLayout(srow3)
+
+            # 4. Use SSL
+            srow4 = QHBoxLayout()
+            self._settings_ssl_cb = QCheckBox()
+            self._settings_ssl_cb.setChecked(protocol == 's')
+            ssl_label = QLabel(_("Use SSL"))
+            def on_ssl(b):
+                host, port, old_protocol, proxy, auto_connect = \
+                    self.network.get_parameters()
+                new_protocol = 's' if b else 't'
+                self.network.set_parameters(
+                    host, port, new_protocol, proxy, auto_connect)
+            self._settings_ssl_cb.clicked.connect(on_ssl)
+            srow4.addWidget(self._settings_ssl_cb)
+            srow4.addWidget(ssl_label)
+            srow4.addStretch(1)
+            sl.addLayout(srow4)
+
+            # 5. Maximum pending requests
+            srow5 = QHBoxLayout()
+            req_params = Interface.get_req_throttle_params(self.config)
+            max_label = QLabel(_("Maximum pending requests"))
+            self._settings_req_max_sb = QSpinBox()
+            self._settings_req_max_sb.setRange(1, 2000)
+            self._settings_req_max_sb.setValue(req_params.max)
+            self._settings_req_max_sb.setMaximumWidth(250)
+            def on_req_max(val):
+                Interface.set_req_throttle_params(self.config, max=val)
+            self._settings_req_max_sb.valueChanged.connect(on_req_max)
+            srow5.addWidget(max_label)
+            srow5.addStretch(1)
+            srow5.addWidget(self._settings_req_max_sb)
+            sl.addLayout(srow5)
+
+            # 6. Request chunk size
+            srow6 = QHBoxLayout()
+            chunk_label = QLabel(_("Request chunk size"))
+            self._settings_req_chunk_sb = QSpinBox()
+            self._settings_req_chunk_sb.setRange(1, 100)
+            self._settings_req_chunk_sb.setValue(req_params.chunkSize)
+            self._settings_req_chunk_sb.setMaximumWidth(250)
+            def on_req_chunk(val):
+                Interface.set_req_throttle_params(
+                    self.config, chunkSize=val)
+            self._settings_req_chunk_sb.valueChanged.connect(on_req_chunk)
+            srow6.addWidget(chunk_label)
+            srow6.addStretch(1)
+            srow6.addWidget(self._settings_req_chunk_sb)
+            sl.addLayout(srow6)
+        else:
+            offline_label = QLabel(
+                _("Network settings are not available in offline mode."))
+            offline_label.setAlignment(Qt.AlignCenter)
+            sl.addWidget(offline_label)
+
+        container_layout.addWidget(server_sec)
+
+        # ====== Proxy Section ======
+        from electroncash.tor import TorController
+        from .network_dialog import TorDetector
+        from .utils import PortValidator, UserPortValidator, HostValidator
+
+        proxy_sec = CollapsibleSection(_("Proxy"), expanded=False)
+        pxl = proxy_sec.content_layout()
+
+        if self.network:
+            self._settings_tor_proxy = None
+            self._settings_tor_use = False
+            weakSelf2 = Weak.ref(self)
+
+            # -- Helper functions (defined before widgets so signals can reference them) --
+
+            def _settings_set_proxy():
+                s = weakSelf2()
+                if not s or not s.network:
+                    return
+                host, port, protocol, proxy, auto_connect = s.network.get_parameters()
+                if s._settings_proxy_cb.isChecked():
+                    proxy = {
+                        'mode': str(s._settings_proxy_mode.currentText()).lower(),
+                        'host': str(s._settings_proxy_host.text()),
+                        'port': str(s._settings_proxy_port.text()),
+                        'user': str(s._settings_proxy_user.text()),
+                        'password': str(s._settings_proxy_password.text()),
+                    }
+                else:
+                    proxy = None
+                s.network.set_parameters(host, port, protocol, proxy, auto_connect)
+
+            def _settings_check_disable_proxy(b):
+                s = weakSelf2()
+                if not s:
+                    return
+                if not s.config.is_modifiable('proxy'):
+                    b = False
+                if s._settings_tor_use:
+                    b = False
+                for w in [s._settings_proxy_mode, s._settings_proxy_host,
+                          s._settings_proxy_port, s._settings_proxy_user,
+                          s._settings_proxy_password]:
+                    w.setEnabled(bool(b))
+
+            def _settings_set_tor_use(use_it):
+                s = weakSelf2()
+                if not s:
+                    return
+                s._settings_tor_use = use_it
+                s.config.set_key('tor_use', s._settings_tor_use)
+                s._settings_tor_cb.setChecked(s._settings_tor_use)
+                s._settings_proxy_cb.setEnabled(not s._settings_tor_use)
+                _settings_check_disable_proxy(not s._settings_tor_use)
+
+            def _settings_use_tor_proxy(use_it):
+                s = weakSelf2()
+                if not s:
+                    return
+                _settings_set_tor_use(use_it)
+                if not use_it:
+                    s._settings_proxy_cb.setChecked(False)
+                else:
+                    socks5_idx = s._settings_proxy_mode.findText('SOCKS5')
+                    if socks5_idx == -1:
+                        print_error("[settings] can't find proxy_mode 'SOCKS5'")
+                        return
+                    s._settings_proxy_mode.setCurrentIndex(socks5_idx)
+                    s._settings_proxy_host.setText("127.0.0.1")
+                    s._settings_proxy_port.setText(
+                        str(s._settings_tor_proxy[1])
+                        if s._settings_tor_proxy else "9050")
+                    s._settings_proxy_user.setText("")
+                    s._settings_proxy_password.setText("")
+                    s._settings_proxy_cb.setChecked(True)
+                _settings_set_proxy()
+
+            def _settings_suggest_proxy(found_proxy):
+                s = weakSelf2()
+                if not s:
+                    return
+                if not found_proxy:
+                    s._settings_tor_cb.setEnabled(False)
+                    _settings_set_tor_use(False)
+                    return
+                s._settings_tor_proxy = found_proxy
+                s._settings_tor_cb_label.setText(
+                    _("Use Tor proxy at port {tor_port}").format(
+                        tor_port=found_proxy[1]))
+                same_proxy = (
+                    s._settings_proxy_mode.currentIndex()
+                    == s._settings_proxy_mode.findText('SOCKS5')
+                    and s._settings_proxy_host.text() == found_proxy[0]
+                    and s._settings_proxy_port.text() == str(found_proxy[1])
+                    and s._settings_proxy_cb.isChecked())
+                _settings_set_tor_use(same_proxy)
+                s._settings_tor_cb.setEnabled(True)
+
+            def _settings_fill_in_proxy():
+                s = weakSelf2()
+                if not s or not s.network:
+                    return
+                host, port, protocol, proxy_config, auto_connect = \
+                    s.network.get_parameters()
+                if not proxy_config:
+                    proxy_config = {
+                        "mode": "none", "host": "localhost", "port": "9050"}
+                _settings_set_tor_use(s.config.get('tor_use', False))
+                b = proxy_config.get('mode') != "none"
+                _settings_check_disable_proxy(b)
+                if b:
+                    s._settings_proxy_cb.setChecked(True)
+                    s._settings_proxy_mode.setCurrentIndex(
+                        s._settings_proxy_mode.findText(
+                            str(proxy_config.get("mode").upper())))
+                s._settings_proxy_host.setText(proxy_config.get("host"))
+                s._settings_proxy_port.setText(proxy_config.get("port"))
+                s._settings_proxy_user.setText(
+                    proxy_config.get("user", ""))
+                s._settings_proxy_password.setText(
+                    proxy_config.get("password", ""))
+
+            # Store fill_in_proxy for use in _refresh_settings_tab
+            self._settings_fill_in_proxy = _settings_fill_in_proxy
+
+            # -- Row 1: Start Tor client --
+            prow1 = QHBoxLayout()
+            self._settings_tor_enabled_cb = QCheckBox()
+            self._settings_tor_enabled_cb.setIcon(
+                QIcon(":icons/tor_logo.svg"))
+            self._settings_tor_enabled_cb.setChecked(
+                self.network.tor_controller.is_enabled())
+
+            # Set initial text/enabled from tor_binary_type
+            tbt = self.network.tor_controller.tor_binary_type
+            _tor_names = {
+                TorController.BinaryType.MISSING: _('Tor'),
+                TorController.BinaryType.SYSTEM: _('system Tor'),
+                TorController.BinaryType.INTEGRATED: _('integrated Tor'),
+            }
+            tbname = _tor_names.get(tbt, _('Tor'))
+            tor_available = tbt != TorController.BinaryType.MISSING
+            self._settings_tor_enabled_cb.setEnabled(tor_available)
+
+            # Build dynamic help text (same as update_tor_enabled in network_dialog)
+            tor_enabled_tooltip_parts = [
+                _("This will start a private instance of the Tor "
+                  "proxy controlled by Electron Cash.")]
+            if not tor_available:
+                tor_enabled_tooltip_parts.insert(
+                    0, _("This feature is unavailable because no "
+                         "Tor binary was found."))
+            tor_enabled_help_text = (
+                ' '.join(tor_enabled_tooltip_parts) + "\n\n"
+                + _("If unsure, it's safe to enable this feature, "
+                    "and leave 'Use Tor Proxy' disabled.  "
+                    "In that situation, only certain plugins "
+                    "(such as CashFusion) will use Tor, but your "
+                    "regular SPV server connections will remain "
+                    "unaffected."))
+            self._settings_tor_enabled_label = HelpLabel(
+                _("Start {tor_binary_name} client").format(
+                    tor_binary_name=tbname),
+                tor_enabled_help_text)
+
+            def on_tor_enabled(b):
+                s = weakSelf2()
+                if s and s.network:
+                    s.network.tor_controller.set_enabled(b)
+            self._settings_tor_enabled_cb.clicked.connect(on_tor_enabled)
+            prow1.addWidget(self._settings_tor_enabled_cb)
+            prow1.addWidget(self._settings_tor_enabled_label)
+            prow1.addStretch(1)
+            pxl.addLayout(prow1)
+
+            # -- Row 2: Custom port (indented) --
+            prow2 = QHBoxLayout()
+            prow2.addSpacing(20)
+            self._settings_tor_custom_port_cb = QCheckBox()
+            custom_port_help = _(
+                "Leave unspecified to automatically allocate a port.")
+            self._settings_tor_custom_port_label = HelpLabel(
+                _("Custom port"), custom_port_help)
+            self._settings_tor_custom_port_cb.setChecked(
+                bool(self.network.tor_controller.get_socks_port()))
+            self._settings_tor_custom_port_cb.setEnabled(
+                tor_available
+                and self._settings_tor_enabled_cb.isChecked())
+
+            self._settings_tor_socks_port = QLineEdit()
+            self._settings_tor_socks_port.setFixedWidth(60)
+            self._settings_tor_socks_port.setText(
+                str(self.network.tor_controller.get_socks_port()))
+            self._settings_tor_socks_port.setValidator(
+                UserPortValidator(
+                    self._settings_tor_socks_port, accept_zero=True))
+            self._settings_tor_socks_port.setEnabled(
+                tor_available
+                and self._settings_tor_custom_port_cb.isChecked())
+
+            def on_custom_port_cb(b):
+                s = weakSelf2()
+                if not s:
+                    return
+                s._settings_tor_socks_port.setEnabled(bool(b))
+                if not b:
+                    s._settings_tor_socks_port.setText("0")
+                    on_socks_port_edit()
+
+            def on_socks_port_edit():
+                s = weakSelf2()
+                if s and s.network:
+                    socks_port = int(s._settings_tor_socks_port.text())
+                    s.network.tor_controller.set_socks_port(socks_port)
+
+            self._settings_tor_custom_port_cb.clicked.connect(
+                on_custom_port_cb)
+            self._settings_tor_socks_port.editingFinished.connect(
+                on_socks_port_edit)
+            # Also link tor_enabled to custom_port_cb enabled state
+            self._settings_tor_enabled_cb.clicked.connect(
+                self._settings_tor_custom_port_cb.setEnabled)
+
+            prow2.addWidget(self._settings_tor_custom_port_cb, 0,
+                            Qt.AlignLeft | Qt.AlignVCenter)
+            prow2.addWidget(self._settings_tor_custom_port_label, 0,
+                            Qt.AlignLeft | Qt.AlignVCenter)
+            prow2.addWidget(self._settings_tor_socks_port, 0,
+                            Qt.AlignLeft | Qt.AlignVCenter)
+            prow2.addStretch(2)
+            prow2.setContentsMargins(0, 0, 0, 6)
+            pxl.addLayout(prow2)
+
+            # -- Row 3: Use Tor Proxy --
+            prow3 = QHBoxLayout()
+            self._settings_tor_cb = QCheckBox()
+            self._settings_tor_cb.setIcon(QIcon(":icons/tor_logo.svg"))
+            self._settings_tor_cb.setEnabled(False)
+            tor_proxy_help = (
+                _("If enabled, all connections application-wide "
+                  "will be routed through Tor.") + "\n\n"
+                + _("Depending on your configuration and preferences "
+                    "as a user, this may or may not be ideal.  "
+                    "In general, connections routed through Tor hide "
+                    "your IP address from servers, at the expense of "
+                    "performance and network throughput.") + "\n\n"
+                + _("For the average user, it's recommended that you "
+                    "leave this option disabled and only leave the "
+                    "'Start Tor client' option enabled."))
+            self._settings_tor_cb_label = HelpLabel(
+                _("Use Tor Proxy"), tor_proxy_help)
+            self._settings_tor_cb.clicked.connect(_settings_use_tor_proxy)
+            prow3.addWidget(self._settings_tor_cb)
+            prow3.addWidget(self._settings_tor_cb_label)
+            prow3.addStretch(1)
+            pxl.addLayout(prow3)
+
+            # -- Row 4: Use proxy --
+            prow4 = QHBoxLayout()
+            self._settings_proxy_cb = QCheckBox()
+            proxy_help = _(
+                'Proxy settings apply to all connections: with '
+                'Electron Cash servers, but also with third-party '
+                'services.')
+            self._settings_proxy_label = HelpLabel(
+                _('Use proxy'), proxy_help)
+            self._settings_proxy_cb.clicked.connect(
+                _settings_check_disable_proxy)
+            self._settings_proxy_cb.clicked.connect(
+                lambda *_a: _settings_set_proxy())
+            prow4.addWidget(self._settings_proxy_cb)
+            prow4.addWidget(self._settings_proxy_label)
+            prow4.addStretch(1)
+            pxl.addLayout(prow4)
+
+            # -- Row 5: Proxy mode / host / port --
+            prow5 = QHBoxLayout()
+            self._settings_proxy_mode = QComboBox()
+            self._settings_proxy_mode.addItems(
+                ['SOCKS4', 'SOCKS5', 'HTTP'])
+            self._settings_proxy_host = QLineEdit()
+            self._settings_proxy_host.setFixedWidth(200)
+            self._settings_proxy_host.setValidator(
+                HostValidator(self._settings_proxy_host))
+            self._settings_proxy_port = QLineEdit()
+            self._settings_proxy_port.setFixedWidth(60)
+            self._settings_proxy_port.setValidator(
+                PortValidator(self._settings_proxy_port))
+
+            self._settings_proxy_mode.currentIndexChanged.connect(
+                lambda *_a: _settings_set_proxy())
+            self._settings_proxy_host.editingFinished.connect(
+                _settings_set_proxy)
+            self._settings_proxy_port.editingFinished.connect(
+                _settings_set_proxy)
+
+            prow5.addWidget(self._settings_proxy_mode)
+            prow5.addWidget(self._settings_proxy_host)
+            prow5.addWidget(self._settings_proxy_port)
+            prow5.addStretch(1)
+            pxl.addLayout(prow5)
+
+            # -- Row 6: Proxy user / password --
+            prow6 = QHBoxLayout()
+            self._settings_proxy_user = QLineEdit()
+            self._settings_proxy_user.setPlaceholderText(_("Proxy user"))
+            self._settings_proxy_password = QLineEdit()
+            self._settings_proxy_password.setPlaceholderText(_("Password"))
+            self._settings_proxy_password.setEchoMode(QLineEdit.Password)
+            self._settings_proxy_password.setFixedWidth(60)
+
+            self._settings_proxy_user.editingFinished.connect(
+                _settings_set_proxy)
+            self._settings_proxy_password.editingFinished.connect(
+                _settings_set_proxy)
+
+            prow6.addWidget(self._settings_proxy_user)
+            prow6.addWidget(self._settings_proxy_password)
+            prow6.addStretch(1)
+            pxl.addLayout(prow6)
+
+            # -- TorController event callbacks --
+            def _on_tor_status_changed(controller):
+                s = weakSelf2()
+                if not s or s.cleaned_up:
+                    return
+                if controller.status == TorController.Status.ERRORED:
+                    tbt2 = s.network.tor_controller.tor_binary_type
+                    tbname2 = _tor_names.get(tbt2, _('Tor'))
+                    msg = _("The {tor_binary_name} client experienced "
+                            "an error or could not be started.").format(
+                                tor_binary_name=tbname2)
+                    QMessageBox.critical(
+                        None, _("Tor Client Error"), msg)
+
+            def _on_tor_port_changed(controller):
+                s = weakSelf2()
+                if (not s or s.cleaned_up
+                        or not controller.active_socks_port
+                        or not controller.is_enabled()
+                        or not s._settings_tor_use):
+                    return
+                s._settings_proxy_port.setText(
+                    str(controller.active_socks_port))
+
+            self.network.tor_controller.status_changed.append(
+                _on_tor_status_changed)
+            self.network.tor_controller.active_port_changed.append(
+                _on_tor_port_changed)
+            # Store refs for cleanup
+            self._settings_tor_status_cb = _on_tor_status_changed
+            self._settings_tor_port_cb = _on_tor_port_changed
+
+            # -- TorDetector --
+            self._settings_tor_detector = TorDetector(self, self.network)
+            self._settings_tor_detector.found_proxy.connect(
+                _settings_suggest_proxy)
+
+            # Initialize proxy widgets from current network state
+            _settings_fill_in_proxy()
+
+            # Start Tor detection
+            self._settings_tor_detector.start()
+
+        else:
+            proxy_offline = QLabel(
+                _("Proxy settings are not available in offline mode."))
+            proxy_offline.setAlignment(Qt.AlignCenter)
+            pxl.addWidget(proxy_offline)
+
+        container_layout.addWidget(proxy_sec)
+
+        # ====== Other Section ======
+        other_sec = CollapsibleSection(_("Other"), expanded=False)
+        otl = other_sec.content_layout()
+
+        # 1. Video device
+        orow1 = QHBoxLayout()
+        self._settings_video_combo = QComboBox()
+        self._settings_video_label = HelpLabel(
+            _('Video device'), _("For scanning QR codes."))
+
+        # Pre-populate with default (cameras scanned lazily)
+        self._settings_video_combo.setEnabled(False)
+        self._settings_video_combo.addItem(_("Default"), "default")
+        self._settings_video_did_scan = False
+
+        def _settings_scan_cameras():
+            if self._settings_video_did_scan:
+                return
+            self._settings_video_did_scan = True
+            try:
+                from PyQt5.QtMultimedia import QCameraInfo
+                system_cameras = QCameraInfo.availableCameras()
+            except ImportError as e:
+                self._settings_video_combo.setToolTip(
+                    _("Unable to probe for cameras on this system. "
+                      "QtMultimedia is likely missing."))
+                self._settings_video_label.setText(
+                    _('Video device') + ' ' + _('(disabled)'))
+                self._settings_video_label.help_text = (
+                    self._settings_video_combo.toolTip() + "\n\n" + str(e))
+                return
+            self._settings_video_combo.clear()
+            self._settings_video_combo.addItem(_("Default"), "default")
+            for cam in system_cameras:
+                self._settings_video_combo.addItem(
+                    cam.description(), cam.deviceName())
+            video_device = self.config.get("video_device")
+            idx = 0
+            if video_device:
+                idx = max(0, self._settings_video_combo.findData(video_device))
+            self._settings_video_combo.setCurrentIndex(idx)
+            self._settings_video_combo.setEnabled(True)
+
+        def on_video_device(x):
+            if self._settings_video_combo.isEnabled():
+                self.config.set_key(
+                    "video_device",
+                    self._settings_video_combo.itemData(x), True)
+
+        self._settings_video_combo.currentIndexChanged.connect(on_video_device)
+        self._settings_video_combo.setMaximumWidth(250)
+        orow1.addWidget(self._settings_video_label)
+        orow1.addStretch(1)
+        orow1.addWidget(self._settings_video_combo)
+        otl.addLayout(orow1)
+
+        # Scan cameras on first paint (via QTimer.singleShot)
+        QTimer.singleShot(0, _settings_scan_cameras)
+
+        # 2. Seed Length
+        orow2 = QHBoxLayout()
+        msg = _("Number of words to use when generating mnemonic "
+                "phrases for a new wallet. ")
+        seed_label = HelpLabel(_("Seed Length"), msg)
+        self._settings_seed_combo = QComboBox()
+        seed_options = ['12', '15', '18', '24']
+        self._settings_seed_combo.addItems(seed_options)
+        bip39_val = self.config.get("bip39_seed_length")
+        if bip39_val not in [12, 15, 18, 24]:
+            bip39_val = 12
+        seed_index_map = {12: 0, 15: 1, 18: 2, 24: 3}
+        self._settings_seed_combo.setCurrentIndex(
+            seed_index_map.get(bip39_val, 0))
+
+        def on_seed_length(x):
+            val_map = {0: 12, 1: 15, 2: 18, 3: 24}
+            self.config.set_key(
+                'bip39_seed_length', val_map.get(x, 12), True)
+        self._settings_seed_combo.currentIndexChanged.connect(on_seed_length)
+        self._settings_seed_combo.setMaximumWidth(250)
+        orow2.addWidget(seed_label)
+        orow2.addStretch(1)
+        orow2.addWidget(self._settings_seed_combo)
+        otl.addLayout(orow2)
+
+        # 3. Identity sub-heading
+        id_heading = QLabel(_("Identity"))
+        f = id_heading.font()
+        f.setBold(True)
+        id_heading.setFont(f)
+        otl.addSpacing(8)
+        otl.addWidget(id_heading)
+
+        # 3a. OpenAlias
+        orow3 = QHBoxLayout()
+        msg = (_('OpenAlias record, used to receive coins and to sign '
+                'payment requests.') + '\n\n'
+               + _('The following alias providers are available:') + '\n'
+               + '\n'.join(['https://cryptoname.co/', 'http://xmr.link/'])
+               + '\n\n'
+               + _('For more information, see http://openalias.org'))
+        alias_label = HelpLabel(_('OpenAlias'), msg)
+        alias = self.config.get('alias', '')
+        self._settings_alias_e = QLineEdit(alias)
+        self._settings_alias_e.setMaximumWidth(250)
+
+        def _settings_set_alias_color():
+            if not self.config.get('alias'):
+                self._settings_alias_e.setStyleSheet("")
+                return
+            if self.alias_info:
+                alias_addr, alias_name, validated = self.alias_info
+                self._settings_alias_e.setStyleSheet(
+                    (ColorScheme.GREEN if validated
+                     else ColorScheme.RED).as_stylesheet(True))
+            else:
+                self._settings_alias_e.setStyleSheet(
+                    ColorScheme.RED.as_stylesheet(True))
+
+        def _settings_on_alias_edit():
+            self._settings_alias_e.setStyleSheet("")
+            alias = str(self._settings_alias_e.text())
+            self.config.set_key('alias', alias, True)
+            if alias:
+                self.fetch_alias()
+
+        _settings_set_alias_color()
+        self.alias_received_signal.connect(_settings_set_alias_color)
+        self._settings_alias_color_cb = _settings_set_alias_color
+        self._settings_alias_e.editingFinished.connect(_settings_on_alias_edit)
+        orow3.addWidget(alias_label)
+        orow3.addStretch(1)
+        orow3.addWidget(self._settings_alias_e)
+        otl.addLayout(orow3)
+
+        # 3b. SSL certificate (read-only)
+        orow4 = QHBoxLayout()
+        msg = ' '.join([
+            _('SSL certificate used to sign payment requests.'),
+            _('Use setconfig to set ssl_chain and ssl_privkey.'),
+        ])
+        ssl_label = HelpLabel(_('SSL certificate'), msg)
+        if self.config.get('ssl_privkey') or self.config.get('ssl_chain'):
+            try:
+                SSL_identity = paymentrequest.check_ssl_config(self.config)
+                SSL_error = None
+            except BaseException as e:
+                SSL_identity = "error"
+                SSL_error = str(e)
+        else:
+            SSL_identity = ""
+            SSL_error = None
+        self._settings_ssl_e = QLineEdit(SSL_identity)
+        self._settings_ssl_e.setStyleSheet(
+            (ColorScheme.RED if SSL_error
+             else ColorScheme.GREEN).as_stylesheet(True)
+            if SSL_identity else '')
+        if SSL_error:
+            self._settings_ssl_e.setToolTip(SSL_error)
+        self._settings_ssl_e.setReadOnly(True)
+        self._settings_ssl_e.setMaximumWidth(250)
+        orow4.addWidget(ssl_label)
+        orow4.addStretch(1)
+        orow4.addWidget(self._settings_ssl_e)
+        otl.addLayout(orow4)
+
+        container_layout.addWidget(other_sec)
+
+        container_layout.addStretch(1)
+
+        # Center the container inside the scroll area
+        outer = QWidget()
+        outer_layout = QHBoxLayout(outer)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.addStretch(1)
+        outer_layout.addWidget(container)
+        outer_layout.addStretch(1)
+        scroll.setWidget(outer)
+        return scroll
+
+    def _refresh_settings_tab(self):
+        """Update per-wallet settings in the Settings tab."""
+        if not hasattr(self, '_settings_notify_cb'):
+            return
+        # General
+        self._settings_notify_cb.setChecked(
+            bool(self.wallet.storage.get('gui_notify_tx', True)))
+        # Outgoing Transactions
+        if self.force_use_single_change_addr:
+            self._settings_usechange_cb.setChecked(True)
+            self._settings_usechange_cb.setEnabled(False)
+            self._settings_multiple_cb.setChecked(False)
+            self._settings_multiple_cb.setEnabled(False)
+        else:
+            self._settings_usechange_cb.setChecked(
+                bool(self.wallet.use_change))
+            self._settings_usechange_cb.setEnabled(True)
+            self._settings_multiple_cb.setChecked(
+                bool(self.wallet.multiple_change))
+            self._settings_multiple_cb.setEnabled(
+                bool(self.wallet.use_change))
+        self._settings_schnorr_cb.setChecked(
+            self.wallet.is_schnorr_enabled())
+        no_schnorr_reason = []
+        self._settings_schnorr_cb.setEnabled(
+            self.wallet.is_schnorr_possible(no_schnorr_reason))
+        self._settings_opreturn_cb.setChecked(
+            bool(self.config.get('enable_opreturn')))
+        self._settings_legacy_p2sh_cb.setChecked(
+            bool(self.config.get('allow_legacy_p2sh', False)))
+        # Localization/Sources — refresh fiat widgets if available
+        if getattr(self, '_update_settings_currencies', None):
+            self._update_settings_currencies()
+            self._update_settings_history_cb()
+            if self._update_settings_fiat_address_cb:
+                self._update_settings_fiat_address_cb()
+            self._update_settings_exchanges()
+        # Server/Connection — refresh network widgets
+        if self.network and hasattr(self, '_settings_autoconnect_cb'):
+            from electroncash.interface import Interface
+            host, port, protocol, proxy, auto_connect = \
+                self.network.get_parameters()
+            self._settings_autoconnect_cb.setChecked(auto_connect)
+            self._settings_preferred_cb.setChecked(
+                self.network.is_whitelist_only())
+            self._settings_ssl_cb.setChecked(protocol == 's')
+            params = Interface.get_req_throttle_params(self.config)
+            self._settings_req_max_sb.setValue(params.max)
+            self._settings_req_chunk_sb.setValue(params.chunkSize)
+        # Proxy/Tor — refresh proxy widgets
+        if self.network and hasattr(self, '_settings_proxy_cb'):
+            self._settings_fill_in_proxy()
+            # Re-evaluate Tor enabled state
+            from electroncash.tor import TorController
+            tbt = self.network.tor_controller.tor_binary_type
+            _tor_names = {
+                TorController.BinaryType.MISSING: _('Tor'),
+                TorController.BinaryType.SYSTEM: _('system Tor'),
+                TorController.BinaryType.INTEGRATED: _('integrated Tor'),
+            }
+            tbname = _tor_names.get(tbt, _('Tor'))
+            tor_available = tbt != TorController.BinaryType.MISSING
+            # Update label text
+            self._settings_tor_enabled_label.setText(
+                _("Start {tor_binary_name} client").format(
+                    tor_binary_name=tbname))
+            # Update help text (dynamic based on availability)
+            tor_enabled_tooltip_parts = [
+                _("This will start a private instance of the Tor "
+                  "proxy controlled by Electron Cash.")]
+            if not tor_available:
+                tor_enabled_tooltip_parts.insert(
+                    0, _("This feature is unavailable because no "
+                         "Tor binary was found."))
+            self._settings_tor_enabled_label.help_text = (
+                ' '.join(tor_enabled_tooltip_parts) + "\n\n"
+                + _("If unsure, it's safe to enable this feature, "
+                    "and leave 'Use Tor Proxy' disabled.  "
+                    "In that situation, only certain plugins "
+                    "(such as CashFusion) will use Tor, but your "
+                    "regular SPV server connections will remain "
+                    "unaffected."))
+            self._settings_tor_enabled_cb.setChecked(
+                self.network.tor_controller.is_enabled())
+            self._settings_tor_enabled_cb.setEnabled(tor_available)
+            self._settings_tor_custom_port_cb.setEnabled(
+                tor_available
+                and self._settings_tor_enabled_cb.isChecked())
+            self._settings_tor_socks_port.setEnabled(
+                tor_available
+                and self._settings_tor_custom_port_cb.isChecked())
+            self._settings_tor_socks_port.setText(
+                str(self.network.tor_controller.get_socks_port()))
 
     def create_history_tab(self):
         from .history_list import HistoryList
@@ -3814,42 +5721,142 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
             self.show_error(_("Wrong signature"))
 
     def sign_verify_message(self, address=None):
-        d = WindowModalDialog(self.top_level_window(), _('Sign/verify Message'))
-        d.setMinimumSize(610, 290)
+        d = WindowModalDialog(self.top_level_window(), _('Sign/Verify Message'))
+        d.setMinimumSize(610, 490)
 
-        layout = QGridLayout(d)
+        layout = QVBoxLayout(d)
 
+        # --- Mode selector: "What do you want to do?" ---
+        mode_label = QLabel(_('What do you want to do?'))
+        mode_label.setStyleSheet("font-weight: bold;")
+        layout.addWidget(mode_label)
+
+        sign_radio = QRadioButton(_('Sign a Message'))
+        verify_radio = QRadioButton(_('Verify a Signature'))
+        sign_radio.setChecked(True)
+        mode_hbox = QHBoxLayout()
+        mode_hbox.addWidget(sign_radio)
+        mode_hbox.addWidget(verify_radio)
+        mode_hbox.addStretch(1)
+        layout.addLayout(mode_hbox)
+
+        # --- Shared widgets ---
         message_e = QTextEdit()
         message_e.setAcceptRichText(False)
-        layout.addWidget(QLabel(_('Message')), 1, 0)
-        layout.addWidget(message_e, 1, 1)
-        layout.setRowStretch(2,3)
+        message_label = QLabel(_('Message'))
 
         address_e = QLineEdit()
         address_e.setText(address.to_ui_string() if address else '')
-        layout.addWidget(QLabel(_('Address')), 2, 0)
-        layout.addWidget(address_e, 2, 1)
+        address_label = QLabel(_('Address'))
+
+        # Address field with "+" picker button
+        pick_address_btn = QPushButton('+')
+        pick_address_btn.setFixedWidth(30)
+        pick_address_btn.setToolTip(_('Choose from your addresses'))
+        pick_address_btn.setCursor(Qt.PointingHandCursor)
+        def on_pick_address():
+            addr = self._pick_address()
+            if addr is not None:
+                address_e.setText(addr.to_ui_string())
+        pick_address_btn.clicked.connect(on_pick_address)
+
+        address_container = QWidget()
+        address_hbox = QHBoxLayout(address_container)
+        address_hbox.setContentsMargins(0, 0, 0, 0)
+        address_hbox.setSpacing(4)
+        address_hbox.addWidget(address_e, 1)
+        address_hbox.addWidget(pick_address_btn)
 
         signature_e = QTextEdit()
         signature_e.setAcceptRichText(False)
-        layout.addWidget(QLabel(_('Signature')), 3, 0)
-        layout.addWidget(signature_e, 3, 1)
-        layout.setRowStretch(3,1)
+        signature_label = QLabel(_('Signature'))
 
-        hbox = QHBoxLayout()
+        # --- Top fields area (grid) ---
+        top_grid = QGridLayout()
+        top_grid.addWidget(QLabel(), 0, 0)  # placeholder, replaced in switch_mode
+        top_grid.addWidget(QWidget(), 0, 1)
+        top_grid.setRowStretch(0, 3)
+        layout.addLayout(top_grid, 3)
 
-        b = QPushButton(_("Sign"))
-        b.clicked.connect(lambda: self.do_sign(address_e, message_e, signature_e))
-        hbox.addWidget(b)
+        # --- Separator label for output ---
+        output_label = QLabel()
+        output_label.setStyleSheet("font-weight: bold; margin-top: 6px;")
+        layout.addWidget(output_label)
 
-        b = QPushButton(_("Verify"))
-        b.clicked.connect(lambda: self.do_verify(address_e, message_e, signature_e))
-        hbox.addWidget(b)
+        # --- Bottom field area (grid) ---
+        bottom_grid = QGridLayout()
+        bottom_grid.addWidget(QLabel(), 0, 0)
+        bottom_grid.addWidget(QWidget(), 0, 1)
+        bottom_grid.setRowStretch(0, 1)
+        layout.addLayout(bottom_grid, 1)
 
-        b = QPushButton(_("Close"))
-        b.clicked.connect(d.accept)
-        hbox.addWidget(b)
-        layout.addLayout(hbox, 4, 1)
+        # --- Action + Close buttons ---
+        action_btn = QPushButton(_('Sign'))
+        action_btn.clicked.connect(lambda: (
+            self.do_sign(address_e, message_e, signature_e)
+            if sign_radio.isChecked()
+            else self.do_verify(address_e, message_e, signature_e)
+        ))
+
+        close_btn = QPushButton(_('Close'))
+        close_btn.clicked.connect(d.accept)
+
+        btn_hbox = QHBoxLayout()
+        btn_hbox.addStretch(1)
+        btn_hbox.addWidget(action_btn)
+        btn_hbox.addWidget(close_btn)
+        layout.addLayout(btn_hbox)
+
+        def switch_mode():
+            signing = sign_radio.isChecked()
+
+            # Clear top grid (all rows — verify uses up to 3)
+            for row in range(3):
+                for col in (0, 1):
+                    item = top_grid.itemAtPosition(row, col)
+                    if item and item.widget():
+                        item.widget().setParent(None)
+
+            # Clear bottom grid row 0
+            for col in (0, 1):
+                item = bottom_grid.itemAtPosition(0, col)
+                if item and item.widget():
+                    item.widget().setParent(None)
+
+            if signing:
+                # Top: Message + Address (with picker)
+                top_grid.addWidget(message_label, 0, 0)
+                top_grid.addWidget(message_e, 0, 1)
+                top_grid.addWidget(address_label, 1, 0)
+                top_grid.addWidget(address_container, 1, 1)
+                pick_address_btn.show()
+                # Bottom: Signature (output)
+                output_label.setText(_('Signature output:'))
+                output_label.show()
+                bottom_grid.addWidget(signature_label, 0, 0)
+                bottom_grid.addWidget(signature_e, 0, 1)
+                action_btn.setText(_('Sign'))
+            else:
+                # Top: Message + Signature + Address (all inputs, picker hidden)
+                top_grid.addWidget(message_label, 0, 0)
+                top_grid.addWidget(message_e, 0, 1)
+                top_grid.addWidget(signature_label, 1, 0)
+                top_grid.addWidget(signature_e, 1, 1)
+                top_grid.addWidget(address_label, 2, 0)
+                top_grid.addWidget(address_container, 2, 1)
+                pick_address_btn.hide()
+                # No bottom output (verify shows popup)
+                output_label.hide()
+                action_btn.setText(_('Verify'))
+
+            # Show all shared widgets (they may have been hidden by setParent(None))
+            for w in (message_label, message_e, address_label, address_container,
+                       signature_label, signature_e):
+                w.show()
+
+        sign_radio.toggled.connect(lambda: switch_mode())
+        switch_mode()  # initialize to sign mode
+
         d.exec_()
 
     @protected
@@ -3873,16 +5880,29 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
             self.show_warning(str(e))
 
     def encrypt_message(self, address=None):
-        d = WindowModalDialog(self.top_level_window(), _('Encrypt/decrypt Message'))
+        d = WindowModalDialog(self.top_level_window(), _('Encrypt/Decrypt Message'))
         d.setMinimumSize(610, 490)
 
-        layout = QGridLayout(d)
+        layout = QVBoxLayout(d)
 
+        # --- Mode selector: "What do you want to do?" ---
+        mode_label = QLabel(_('What do you want to do?'))
+        mode_label.setStyleSheet("font-weight: bold;")
+        layout.addWidget(mode_label)
+
+        encrypt_radio = QRadioButton(_('Encrypt a Message'))
+        decrypt_radio = QRadioButton(_('Decrypt a Message'))
+        encrypt_radio.setChecked(True)
+        mode_hbox = QHBoxLayout()
+        mode_hbox.addWidget(encrypt_radio)
+        mode_hbox.addWidget(decrypt_radio)
+        mode_hbox.addStretch(1)
+        layout.addLayout(mode_hbox)
+
+        # --- Shared widgets ---
         message_e = QTextEdit()
         message_e.setAcceptRichText(False)
-        layout.addWidget(QLabel(_('Message')), 1, 0)
-        layout.addWidget(message_e, 1, 1)
-        layout.setRowStretch(2,3)
+        message_label = QLabel(_('Message'))
 
         pubkey_e = QLineEdit()
         if address:
@@ -3890,29 +5910,94 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
             if not isinstance(pubkey, str):
                 pubkey = pubkey.to_ui_string()
             pubkey_e.setText(pubkey)
-        layout.addWidget(QLabel(_('Public key')), 2, 0)
-        layout.addWidget(pubkey_e, 2, 1)
+        pubkey_label = QLabel(_('Public key'))
 
         encrypted_e = QTextEdit()
         encrypted_e.setAcceptRichText(False)
-        layout.addWidget(QLabel(_('Encrypted')), 3, 0)
-        layout.addWidget(encrypted_e, 3, 1)
-        layout.setRowStretch(3,1)
+        encrypted_label = QLabel(_('Encrypted'))
 
-        hbox = QHBoxLayout()
-        b = QPushButton(_("Encrypt"))
-        b.clicked.connect(lambda: self.do_encrypt(message_e, pubkey_e, encrypted_e))
-        hbox.addWidget(b)
+        # --- Top fields area (grid) ---
+        top_grid = QGridLayout()
+        # Row 0: first text area, Row 1: public key line edit
+        # The labels and widgets in row 0 swap depending on mode
+        top_grid.addWidget(QLabel(), 0, 0)  # placeholder, replaced in switch_mode
+        top_grid.addWidget(QWidget(), 0, 1)
+        top_grid.addWidget(pubkey_label, 1, 0)
+        top_grid.addWidget(pubkey_e, 1, 1)
+        top_grid.setRowStretch(0, 3)
+        layout.addLayout(top_grid, 3)
 
-        b = QPushButton(_("Decrypt"))
-        b.clicked.connect(lambda: self.do_decrypt(message_e, pubkey_e, encrypted_e))
-        hbox.addWidget(b)
+        # --- Separator label for output ---
+        output_label = QLabel()
+        output_label.setStyleSheet("font-weight: bold; margin-top: 6px;")
+        layout.addWidget(output_label)
 
-        b = QPushButton(_("Close"))
-        b.clicked.connect(d.accept)
-        hbox.addWidget(b)
+        # --- Bottom field area (grid) ---
+        bottom_grid = QGridLayout()
+        bottom_grid.addWidget(QLabel(), 0, 0)
+        bottom_grid.addWidget(QWidget(), 0, 1)
+        bottom_grid.setRowStretch(0, 1)
+        layout.addLayout(bottom_grid, 1)
 
-        layout.addLayout(hbox, 4, 1)
+        # --- Action + Close buttons ---
+        action_btn = QPushButton(_('Encrypt'))
+        action_btn.clicked.connect(lambda: (
+            self.do_encrypt(message_e, pubkey_e, encrypted_e)
+            if encrypt_radio.isChecked()
+            else self.do_decrypt(message_e, pubkey_e, encrypted_e)
+        ))
+
+        close_btn = QPushButton(_('Close'))
+        close_btn.clicked.connect(d.accept)
+
+        btn_hbox = QHBoxLayout()
+        btn_hbox.addStretch(1)
+        btn_hbox.addWidget(action_btn)
+        btn_hbox.addWidget(close_btn)
+        layout.addLayout(btn_hbox)
+
+        def switch_mode():
+            encrypting = encrypt_radio.isChecked()
+
+            # Clear the top grid row 0
+            for pos in [(0, 0), (0, 1)]:
+                item = top_grid.itemAtPosition(*pos)
+                if item and item.widget():
+                    item.widget().setParent(None)
+
+            # Clear the bottom grid row 0
+            for pos in [(0, 0), (0, 1)]:
+                item = bottom_grid.itemAtPosition(*pos)
+                if item and item.widget():
+                    item.widget().setParent(None)
+
+            if encrypting:
+                # Top: Message + Public key, Bottom: Encrypted (output)
+                top_grid.addWidget(message_label, 0, 0)
+                top_grid.addWidget(message_e, 0, 1)
+                output_label.setText(_('Encrypted output:'))
+                bottom_grid.addWidget(encrypted_label, 0, 0)
+                bottom_grid.addWidget(encrypted_e, 0, 1)
+                action_btn.setText(_('Encrypt'))
+                d.setWindowTitle(_('Encrypt/Decrypt Message'))
+            else:
+                # Top: Encrypted + Public key, Bottom: Message (output)
+                top_grid.addWidget(encrypted_label, 0, 0)
+                top_grid.addWidget(encrypted_e, 0, 1)
+                output_label.setText(_('Decrypted output:'))
+                bottom_grid.addWidget(message_label, 0, 0)
+                bottom_grid.addWidget(message_e, 0, 1)
+                action_btn.setText(_('Decrypt'))
+                d.setWindowTitle(_('Encrypt/Decrypt Message'))
+
+            # Show all widgets (they may have been hidden by setParent(None))
+            for w in (message_label, message_e, pubkey_label, pubkey_e,
+                       encrypted_label, encrypted_e):
+                w.show()
+
+        encrypt_radio.toggled.connect(lambda: switch_mode())
+        switch_mode()  # initialize to encrypt mode
+
         d.exec_()
 
     def password_dialog(self, msg=None, parent=None):
@@ -5641,6 +7726,31 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         if self.cleaned_up:
             return
         self.cleaned_up = True
+
+        # Stop TorDetector thread if created for Settings tab
+        td = getattr(self, '_settings_tor_detector', None)
+        if td:
+            td.stop()
+        # Remove TorController event callbacks registered by Settings tab
+        if self.network:
+            for attr in ('_settings_tor_status_cb', '_settings_tor_port_cb'):
+                cb = getattr(self, attr, None)
+                if cb:
+                    try:
+                        if attr == '_settings_tor_status_cb':
+                            self.network.tor_controller.status_changed.remove(cb)
+                        else:
+                            self.network.tor_controller.active_port_changed.remove(cb)
+                    except ValueError:
+                        pass
+        # Disconnect alias signal from Settings tab
+        cb = getattr(self, '_settings_alias_color_cb', None)
+        if cb:
+            try:
+                self.alias_received_signal.disconnect(cb)
+            except TypeError:
+                pass
+
         if self.wallet.thread:  # guard against window close before load_wallet was called (#1554)
             self.wallet.thread.stop()
             self.wallet.thread.wait() # Join the thread to make sure it's really dead.
@@ -6324,19 +8434,6 @@ class TxUpdateMgr(QObject, PrintError):
                         total_amount += v
                         n_ok += 1
                 if n_cashacct:
-                    # Unhide the Addresses tab if cash account reg tx seen
-                    # and user never explicitly hid it.
-                    if parent.config.get("show_addresses_tab") is None:
-                        # We unhide it because presumably they want to SEE
-                        # their cash accounts now that they have them --
-                        # and part of the UI is *IN* the Addresses tab.
-                        parent.toggle_tab(parent.addresses_tab)
-                    # Do same for console tab
-                    if parent.config.get("show_contacts_tab") is None:
-                        # We unhide it because presumably they want to SEE
-                        # their cash accounts now that they have them --
-                        # and part of the UI is *IN* the Console tab.
-                        parent.toggle_tab(parent.contacts_tab)
                     if ca_txs:
                         # Notify contact_list of potentially unconfirmed txs
                         parent.contact_list.ca_update_potentially_unconfirmed_registrations(ca_txs)

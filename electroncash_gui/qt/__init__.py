@@ -74,7 +74,7 @@ from .installwizard import InstallWizard, GoBack
 from . import icons # This needs to be imported once app-wide then the :icons/ namespace becomes available for Qt icon filenames.
 from .util import *   # * needed for plugins
 from .main_window import ElectrumWindow
-from .network_dialog import NetworkDialog
+from .network_dialog import NetworkDialog, NetworkOverviewDialog, CashFusionSettingsDialog
 from .exception_window import Exception_Hook
 from .update_checker import UpdateChecker
 from .token_meta import TokenMetaQt
@@ -130,6 +130,8 @@ class ElectrumGui(QObject, PrintError):
         self.timer = QTimer(self); self.timer.setSingleShot(False); self.timer.setInterval(500) #msec
         self.gc_timer = QTimer(self); self.gc_timer.setSingleShot(True); self.gc_timer.timeout.connect(ElectrumGui.gc); self.gc_timer.setInterval(500) #msec
         self.nd = None
+        self.network_overview_dialog = None
+        self.cashfusion_settings_dialog = None
         self._last_active_window = None  # we remember the last activated ElectrumWindow as a Weak.ref
         Address.show_cashaddr(self.is_cashaddr())
         # Dark Theme -- ideally set this before any widgets are created.
@@ -563,6 +565,38 @@ class ElectrumGui(QObject, PrintError):
         run_hook("on_network_dialog", self.nd)
         self.nd.show()
         if jumpto: self.nd.jumpto(jumpto)
+
+    def show_network_overview_dialog(self, parent):
+        if self.warn_if_no_network(parent):
+            return
+        if self.network_overview_dialog:
+            self.network_overview_dialog.on_update()
+            self.network_overview_dialog.show()
+            self.network_overview_dialog.raise_()
+            return
+        self.network_overview_dialog = NetworkOverviewDialog(
+            self.daemon.network, self.config)
+        self.network_overview_dialog.show()
+
+    def show_cashfusion_settings_dialog(self, parent):
+        if self.warn_if_no_network(parent):
+            return
+        if self.cashfusion_settings_dialog:
+            self.cashfusion_settings_dialog.show()
+            self.cashfusion_settings_dialog.raise_()
+            return
+        fusion_plugin = self.plugins.get_internal_plugin('fusion')
+        if not fusion_plugin or not fusion_plugin.is_enabled():
+            if parent:
+                parent.show_error(
+                    _('The CashFusion plugin is not currently '
+                      'enabled. Enable it in Optional Features '
+                      'to use this.'))
+            return
+        settings_widget = fusion_plugin.create_settings_widget()
+        self.cashfusion_settings_dialog = CashFusionSettingsDialog(
+            settings_widget)
+        self.cashfusion_settings_dialog.show()
 
     def create_window_for_wallet(self, wallet):
         w = ElectrumWindow(self, wallet)
@@ -1016,6 +1050,12 @@ class ElectrumGui(QObject, PrintError):
             if self.nd:
                 self.nd.deleteLater()
                 self.nd = None
+            if self.network_overview_dialog:
+                self.network_overview_dialog.deleteLater()
+                self.network_overview_dialog = None
+            if self.cashfusion_settings_dialog:
+                self.cashfusion_settings_dialog.deleteLater()
+                self.cashfusion_settings_dialog = None
         self.app.aboutToQuit.connect(clean_up)
 
         Exception_Hook(self.config) # This wouldn't work anyway unless the app event loop is active, so we must install it once here and no earlier.

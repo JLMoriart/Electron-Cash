@@ -479,17 +479,23 @@ class Plugin(FusionPlugin, QObject):
         return btn
 
     def show_settings_dialog(self):
-        self.gui.show_network_dialog(None, jumpto='fusion')
+        self.gui.show_cashfusion_settings_dialog(None)
+
+    def create_settings_widget(self):
+        """Create a standalone SettingsWidget for CashFusion settings."""
+        settings_widget = SettingsWidget(self)
+        self.server_status_changed_signal.connect(
+            settings_widget.update_server_error)
+        self.widgets.add(settings_widget)
+        return settings_widget
 
     @hook
     def on_network_dialog(self, network_dialog):
         if self.weak_settings_tab and self.weak_settings_tab():
             return  # already exists
-        settings_tab = SettingsWidget(self)
-        self.server_status_changed_signal.connect(settings_tab.update_server_error)
+        settings_tab = self.create_settings_widget()
         tabs = network_dialog.nlayout.tabs
         tabs.addTab(settings_tab, icon_fusion_logo, _('CashFusion'))
-        self.widgets.add(settings_tab)
         self.weak_settings_tab = weakref.ref(settings_tab)
 
     @hook

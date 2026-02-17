@@ -26,7 +26,7 @@ import os
 from typing import List, Optional
 
 from PyQt5.QtCore import Qt, QMargins
-from PyQt5.QtWidgets import QDialog, QGridLayout, QVBoxLayout, QLabel, QPushButton, QToolButton, QGroupBox
+from PyQt5.QtWidgets import QDialog, QGridLayout, QVBoxLayout, QLabel, QPushButton, QWidget
 
 from electroncash import keystore
 from electroncash.i18n import _
@@ -46,7 +46,6 @@ def show_wallet_information(main_window):
     dialog = WindowModalDialog(main_window.top_level_window(), _("Wallet Information"))
     dialog.setMinimumSize(500, 100)
     mpk_list: List[str] = wallet.get_master_public_keys()
-    orig_mpk_list = mpk_list[:]
     vbox = QVBoxLayout()
     wallet_type = wallet.storage.get('wallet_type', '')
     grid = QGridLayout()
@@ -57,20 +56,29 @@ def show_wallet_information(main_window):
     grid.addWidget(QLabel(wallet_type), 1, 1)
     grid.addWidget(QLabel(_("Script type") + ':'), 2, 0)
     grid.addWidget(QLabel(wallet.txin_type), 2, 1)
+    # Derivation path(s) — only for deterministic wallets with saved derivation info
+    if wallet.is_deterministic():
+        derivations = []
+        for ks in wallet.get_keystores():
+            if hasattr(ks, 'derivation') and ks.has_derivation():
+                derivations.append(ks.derivation)
+        if derivations:
+            grid.addWidget(QLabel(_("Derivation path") + ':'), 3, 0)
+            grid.addWidget(QLabel('\n'.join(derivations)), 3, 1)
     vbox.addLayout(grid)
     bottom_buttons = Buttons(CloseButton(dialog))
     if wallet.is_deterministic():
         has_prvkey_ct = sum(ks.has_master_private_key() for ks in wallet.get_keystores()
                             if isinstance(ks, keystore.Xprv))
+        is_multi = len(mpk_list) > 1
+        password: Optional[str] = None
+
+        # ── xPub section ──────────────────────────────────────────────
         mpk_text = ShowQRTextEdit()
         mpk_text.setMaximumHeight(150)
         mpk_text.addCopyButton()
         mpk_del_button: Optional[QPushButton] = None
-        show_privkey_button: Optional[QToolButton] = None
         selected_index: Optional[int] = None
-        title_lbl: Optional[QLabel] = None
-        title_gb: Optional[QGroupBox] = None
-        password: Optional[str] = None
 
         def mpk_selected(clayout, index):
             nonlocal selected_index
@@ -79,38 +87,52 @@ def show_wallet_information(main_window):
             name = (clayout and clayout.group.checkedButton() and clayout.group.checkedButton().text()) or _("Key")
             if mpk_del_button:
                 mpk_del_button.setText(_("Delete") + " " + name)
-            if show_privkey_button:
-                ks = wallet.get_keystores()[index]
-                if not show_privkey_button.isChecked():
-                    show_privkey_button.setEnabled(isinstance(ks, keystore.Xprv) and ks.has_master_private_key())
-        # only show the combobox in case multiple accounts are available
+
         labels_clayout = None
-        if len(mpk_list) > 1:
+        mpk_container = QWidget()
+        mpk_container_vbox = QVBoxLayout(mpk_container)
+        mpk_container_vbox.setContentsMargins(0, 0, 0, 0)
+        if is_multi:
             def label(key):
                 if isinstance(wallet, Multisig_Wallet):
-                    return _("cosigner") + ' ' + str(key +1)
+                    return _("cosigner") + ' ' + str(key + 1)
                 elif isinstance(wallet, MultiXPubWallet):
                     return _("Key") + f" {key + 1}"
                 return ''
             labels = [label(i) for i in range(len(mpk_list))]
             labels_clayout = ChoicesLayout(_("Master Public Keys"), labels, on_id_clicked=mpk_selected)
-            title_gb = labels_clayout.group_box()
-            vbox.addLayout(labels_clayout.layout())
+            mpk_container_vbox.addLayout(labels_clayout.layout())
         else:
-            title_lbl = QLabel(_("Master Public Key"))
-            vbox.addWidget(title_lbl)
-        vbox.addWidget(mpk_text)
+            mpk_container_vbox.addWidget(QLabel(_("Master Public Key")))
+        mpk_container_vbox.addWidget(mpk_text)
+        mpk_container.hide()
 
-        # Support for deleting keys
+        # Show/Hide toggle button for xPub section
+        show_mpk_button = QPushButton(
+            _("Show Master Public Keys") if is_multi else _("Show Master Public Key"))
+
+        def toggle_mpk():
+            if mpk_container.isVisible():
+                mpk_container.hide()
+                show_mpk_button.setText(
+                    _("Show Master Public Keys") if is_multi else _("Show Master Public Key"))
+            else:
+                mpk_container.show()
+                show_mpk_button.setText(
+                    _("Hide Master Public Keys") if is_multi else _("Hide Master Public Key"))
+
+        show_mpk_button.clicked.connect(toggle_mpk)
+        vbox.addWidget(show_mpk_button)
+        vbox.addWidget(mpk_container)
+
+        # Support for deleting keys (inside xPub text area overlay)
         if wallet.can_delete_keystore() and labels_clayout:
-            def on_click(checked):
+            def on_del_click(checked):
                 if selected_index is not None:
                     if main_window.wallet_delete_xpub(selected_index):
                         dialog.close()
-            mpk_del_button = mpk_text.addButton(icon_name=None, on_click=on_click, index=0,
+            mpk_del_button = mpk_text.addButton(icon_name=None, on_click=on_del_click, index=0,
                                                 tooltip=_("Delete this key from the wallet"),
-                                                # This is tmp text for layout, gets set to real text by mpk_selected
-                                                # above ...
                                                 text="Delete Key 1")
             red = ColorScheme.RED.get_html(True)
             red_alt = ColorScheme.RED.get_html(False)
@@ -128,7 +150,7 @@ def show_wallet_information(main_window):
             add_but.setContentsMargins(marg)
             bottom_buttons.insertWidget(0, add_but, Qt.AlignLeft)
 
-            def on_click(checked):
+            def on_add_click(checked):
                 d = QDialog(parent=dialog)
                 d.setWindowModality(Qt.WindowModal)
                 d.setMinimumSize(400, 200)
@@ -151,49 +173,86 @@ def show_wallet_information(main_window):
                 if d.exec_() == QDialog.Accepted:
                     if main_window.wallet_add_xpub(l.get_text().strip()):
                         dialog.close()
-            add_but.clicked.connect(on_click)
+            add_but.clicked.connect(on_add_click)
 
-        # Support for "Show XPrv"
+        # ── xPrv section (separate from xPub) ────────────────────────
         if has_prvkey_ct > 0:
-            show_privkey_button = QToolButton()
-            show_privkey_button.setText(_("Show XPrv"))
-            show_privkey_button.setToolTip(_("Toggle display of public versus private master keys"))
-            show_privkey_button.setCheckable(True)
-            show_privkey_button.setContentsMargins(1, 1, 1, 1)
-            mpk_text.addWidget(show_privkey_button)
+            xprv_list: List[Optional[str]] = [None] * len(mpk_list)
+            xprv_text = ShowQRTextEdit()
+            xprv_text.setMaximumHeight(150)
+            xprv_text.addCopyButton()
+            xprv_selected_index: Optional[int] = None
 
-            def on_toggle(checked):
-                nonlocal mpk_list, password
-                if not checked:
-                    mpk_list = orig_mpk_list[:]
-                    mpk_selected(labels_clayout, selected_index)  # Force redraw of text area with new text
+            def xprv_selected(clayout, index):
+                nonlocal xprv_selected_index
+                xprv_selected_index = index
+                key_text = xprv_list[index]
+                if key_text is not None:
+                    xprv_text.setText(key_text)
+
+            xprv_labels_clayout = None
+            xprv_container = QWidget()
+            xprv_container_vbox = QVBoxLayout(xprv_container)
+            xprv_container_vbox.setContentsMargins(0, 0, 0, 0)
+            if is_multi:
+                xprv_labels = [label(i) for i in range(len(mpk_list))]
+                xprv_labels_clayout = ChoicesLayout(_("Master Private Keys"), xprv_labels,
+                                                    on_id_clicked=xprv_selected)
+                xprv_container_vbox.addLayout(xprv_labels_clayout.layout())
+            else:
+                xprv_container_vbox.addWidget(QLabel(_("Master Private Key")))
+            xprv_container_vbox.addWidget(xprv_text)
+            xprv_container.hide()
+
+            # Show/Hide toggle button for xPrv section
+            show_xprv_button = QPushButton(
+                _("Show Master Private Keys") if is_multi else _("Show Master Private Key"))
+
+            def toggle_xprv():
+                nonlocal password
+                if xprv_container.isVisible():
+                    xprv_container.hide()
+                    show_xprv_button.setText(
+                        _("Show Master Private Keys") if is_multi else _("Show Master Private Key"))
                 else:
-                    for i, ks in enumerate(wallet.get_keystores()):
-                        if isinstance(ks, keystore.Xprv) and ks.has_master_private_key():
-                            if ks.is_master_private_key_encrypted() and password is None:
-                                password = main_window.password_dialog(parent=dialog)
-                                if password is None:
-                                    show_privkey_button.setChecked(False)
-                                    return
-                            try:
-                                mpk_list[i] = ks.get_master_private_key(password)
-                            except InvalidPassword as e:
-                                password = None  # Clear nonlocal
-                                main_window.show_error(e)
-                                show_privkey_button.setChecked(False)
-                                return
-                        else:
-                            mpk_list[i] = _('No XPrv')
-                    mpk_selected(labels_clayout, selected_index)  # Forces redraw of text area
-                if title_lbl is not None:
-                    title_lbl.setText(_("Master Public Key") if not checked else _("Master Private Key"))
-                if title_gb is not None:
-                    title_gb.setTitle(_("Master Public Keys") if not checked else _("Master Private Keys"))
+                    # Populate xprv_list on first reveal (lazy password prompt)
+                    if xprv_list[0] is None:
+                        for i, ks in enumerate(wallet.get_keystores()):
+                            if isinstance(ks, keystore.Xprv) and ks.has_master_private_key():
+                                if ks.is_master_private_key_encrypted() and password is None:
+                                    password = main_window.password_dialog(parent=dialog)
+                                    if password is None:
+                                        return  # cancelled — don't show
+                                try:
+                                    xprv_list[i] = ks.get_master_private_key(password)
+                                except InvalidPassword as e:
+                                    password = None
+                                    main_window.show_error(e)
+                                    return  # don't show
+                            else:
+                                xprv_list[i] = _('No XPrv')
+                        xprv_selected(xprv_labels_clayout, xprv_selected_index if xprv_selected_index is not None else 0)
+                    xprv_container.show()
+                    show_xprv_button.setText(
+                        _("Hide Master Private Keys") if is_multi else _("Hide Master Private Key"))
 
-            show_privkey_button.toggled.connect(on_toggle)
-        bottom_buttons.insertStretch(bottom_buttons.count( ) -1, 2)
+            show_xprv_button.clicked.connect(toggle_xprv)
+            vbox.addWidget(show_xprv_button)
+            vbox.addWidget(xprv_container)
+
+        bottom_buttons.insertStretch(bottom_buttons.count() - 1, 2)
         mpk_selected(labels_clayout, 0)
     vbox.addStretch(1)
     vbox.addLayout(bottom_buttons)
     dialog.setLayout(vbox)
+    if wallet.is_deterministic():
+        # Pre-size the dialog to fit both sections even though they start hidden
+        mpk_container.show()
+        if has_prvkey_ct > 0:
+            xprv_container.show()
+        dialog.adjustSize()
+        dialog.setMinimumSize(dialog.size())
+        mpk_container.hide()
+        if has_prvkey_ct > 0:
+            xprv_container.hide()
     dialog.exec_()

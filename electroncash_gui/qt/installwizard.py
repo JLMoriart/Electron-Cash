@@ -154,18 +154,26 @@ class InstallWizard(QDialog, MessageBoxMixin, BaseWizard):
         hbox.setStretchFactor(scroll, 1)
         outer_vbox.addLayout(hbox)
         self.create_wallet_button = QPushButton(_('Create New Wallet'))
-        self.create_wallet_button.setStyleSheet("font-size: 20px; padding: 8px 24px;")
+        self.create_wallet_button.setStyleSheet("font-size: 14px; padding: 6px 8px;")
         self.create_wallet_button.hide()
         self.import_seed_button = QPushButton(_('Import Seed Phrase'))
-        self.import_seed_button.setStyleSheet("font-size: 20px; padding: 8px 24px;")
+        self.import_seed_button.setStyleSheet("font-size: 14px; padding: 6px 8px;")
         self.import_seed_button.hide()
-        self.setup_hw_button = QPushButton(_('Set Up Hardware Wallet'))
-        self.setup_hw_button.setStyleSheet("font-size: 20px; padding: 8px 24px;")
+        self.setup_hw_button = QPushButton(_('Setup Hardware Wallet'))
+        self.setup_hw_button.setStyleSheet("font-size: 14px; padding: 6px 8px;")
         self.setup_hw_button.hide()
+        self.setup_multisig_button = QPushButton(_('Setup/Import Multi-Sig Wallet'))
+        self.setup_multisig_button.setStyleSheet("font-size: 14px; padding: 6px 8px;")
+        self.setup_multisig_button.hide()
+        self.other_options_button = QPushButton(_('Other Wallet Options'))
+        self.other_options_button.setStyleSheet("font-size: 14px; padding: 6px 8px;")
+        self.other_options_button.hide()
         self.button_hbox = QHBoxLayout()
         self.button_hbox.addWidget(self.create_wallet_button)
         self.button_hbox.addWidget(self.import_seed_button)
         self.button_hbox.addWidget(self.setup_hw_button)
+        self.button_hbox.addWidget(self.setup_multisig_button)
+        self.button_hbox.addWidget(self.other_options_button)
         self.button_hbox.addStretch(1)
         self.button_hbox.addWidget(self.back_button)
         self.button_hbox.addWidget(self.next_button)
@@ -177,7 +185,7 @@ class InstallWizard(QDialog, MessageBoxMixin, BaseWizard):
         # Track object lifecycle
         finalization_print_error(self)
 
-    def _build_wallet_selection_page(self, wallet_folder, create_new_requested, import_seed_requested, setup_hw_requested):
+    def _build_wallet_selection_page(self, wallet_folder, create_new_requested, import_seed_requested, setup_hw_requested, setup_multisig_requested, other_options_requested):
         """Build (or rebuild) the wallet selection page layout and widgets.
         Returns the layout. All child widgets are recreated fresh each time
         so the layout can safely be discarded and rebuilt."""
@@ -290,6 +298,28 @@ class InstallWizard(QDialog, MessageBoxMixin, BaseWizard):
         self.setup_hw_button.clicked.connect(on_setup_hw)
         self.setup_hw_button.show()
 
+        def on_setup_multisig():
+            setup_multisig_requested[0] = True
+            self.loop.exit(2)
+
+        try:
+            self.setup_multisig_button.clicked.disconnect()
+        except TypeError:
+            pass  # no prior connections
+        self.setup_multisig_button.clicked.connect(on_setup_multisig)
+        self.setup_multisig_button.show()
+
+        def on_other_options():
+            other_options_requested[0] = True
+            self.loop.exit(2)
+
+        try:
+            self.other_options_button.clicked.disconnect()
+        except TypeError:
+            pass  # no prior connections
+        self.other_options_button.clicked.connect(on_other_options)
+        self.other_options_button.show()
+
         self.pw_label.hide()
         self.pw_e.hide()
         self.back_button.setText(_('Cancel'))
@@ -320,8 +350,10 @@ class InstallWizard(QDialog, MessageBoxMixin, BaseWizard):
         create_new_requested = [False]
         import_seed_requested = [False]
         setup_hw_requested = [False]
+        setup_multisig_requested = [False]
+        other_options_requested = [False]
 
-        self._build_wallet_selection_page(wallet_folder, create_new_requested, import_seed_requested, setup_hw_requested)
+        self._build_wallet_selection_page(wallet_folder, create_new_requested, import_seed_requested, setup_hw_requested, setup_multisig_requested, other_options_requested)
 
         while True:
             password = None
@@ -338,7 +370,7 @@ class InstallWizard(QDialog, MessageBoxMixin, BaseWizard):
                 # User went back from naming page or cancelled —
                 # rebuild the wallet selection page from scratch
                 # (the old layout was destroyed when set_layout replaced it)
-                self._build_wallet_selection_page(wallet_folder, create_new_requested, import_seed_requested, setup_hw_requested)
+                self._build_wallet_selection_page(wallet_folder, create_new_requested, import_seed_requested, setup_hw_requested, setup_multisig_requested, other_options_requested)
                 continue
 
             # --- Handle "Import Seed Phrase" button ---
@@ -348,7 +380,7 @@ class InstallWizard(QDialog, MessageBoxMixin, BaseWizard):
                 self.run('import_wallet_from_seed', wallet_folder)
                 if self.wallet:
                     return self.wallet, None
-                self._build_wallet_selection_page(wallet_folder, create_new_requested, import_seed_requested, setup_hw_requested)
+                self._build_wallet_selection_page(wallet_folder, create_new_requested, import_seed_requested, setup_hw_requested, setup_multisig_requested, other_options_requested)
                 continue
 
             # --- Handle "Set Up Hardware Wallet" button ---
@@ -358,7 +390,27 @@ class InstallWizard(QDialog, MessageBoxMixin, BaseWizard):
                 self.run('setup_hardware_wallet', wallet_folder)
                 if self.wallet:
                     return self.wallet, None
-                self._build_wallet_selection_page(wallet_folder, create_new_requested, import_seed_requested, setup_hw_requested)
+                self._build_wallet_selection_page(wallet_folder, create_new_requested, import_seed_requested, setup_hw_requested, setup_multisig_requested, other_options_requested)
+                continue
+
+            # --- Handle "Setup/Import Multi-Sig Wallet" button ---
+            if setup_multisig_requested[0]:
+                setup_multisig_requested[0] = False
+                self.stack = []
+                self.run('setup_multisig_wallet', wallet_folder)
+                if self.wallet:
+                    return self.wallet, None
+                self._build_wallet_selection_page(wallet_folder, create_new_requested, import_seed_requested, setup_hw_requested, setup_multisig_requested, other_options_requested)
+                continue
+
+            # --- Handle "Other Wallet Options" button ---
+            if other_options_requested[0]:
+                other_options_requested[0] = False
+                self.stack = []
+                self.run('other_wallet_options', wallet_folder)
+                if self.wallet:
+                    return self.wallet, None
+                self._build_wallet_selection_page(wallet_folder, create_new_requested, import_seed_requested, setup_hw_requested, setup_multisig_requested, other_options_requested)
                 continue
 
             if self.storage.file_exists() and not self.storage.is_encrypted():
@@ -381,6 +433,8 @@ class InstallWizard(QDialog, MessageBoxMixin, BaseWizard):
         self.create_wallet_button.hide()
         self.import_seed_button.hide()
         self.setup_hw_button.hide()
+        self.setup_multisig_button.hide()
+        self.other_options_button.hide()
 
         path = self.storage.path
         if self.storage.requires_split():
@@ -476,6 +530,8 @@ class InstallWizard(QDialog, MessageBoxMixin, BaseWizard):
         self.create_wallet_button.hide()
         self.import_seed_button.hide()
         self.setup_hw_button.hide()
+        self.setup_multisig_button.hide()
+        self.other_options_button.hide()
         self.next_button.setText(_('Continue'))
         self.back_button.setText(_('Back'))
         # Use manual loop so Back raises UserCancelled (returns to wallet
@@ -535,6 +591,8 @@ class InstallWizard(QDialog, MessageBoxMixin, BaseWizard):
         self.create_wallet_button.hide()
         self.import_seed_button.hide()
         self.setup_hw_button.hide()
+        self.setup_multisig_button.hide()
+        self.other_options_button.hide()
         self.next_button.setText(_('Continue'))
         self.back_button.setText(_('Back'))
         self.set_layout(create_vbox, title=_('Import Wallet'))
@@ -591,9 +649,302 @@ class InstallWizard(QDialog, MessageBoxMixin, BaseWizard):
         self.create_wallet_button.hide()
         self.import_seed_button.hide()
         self.setup_hw_button.hide()
+        self.setup_multisig_button.hide()
+        self.other_options_button.hide()
         self.next_button.setText(_('Continue'))
         self.back_button.setText(_('Back'))
-        self.set_layout(create_vbox, title=_('Set Up Hardware Wallet'))
+        self.set_layout(create_vbox, title=_('Setup Hardware Wallet'))
+        while True:
+            result = self.loop.exec_()
+            if not result or result == 1:  # close or Back
+                raise UserCancelled
+            break  # result == 2 (Continue)
+        self.title.setVisible(False)
+        self.back_button.setEnabled(False)
+        self.next_button.setEnabled(False)
+        self.main_widget.setVisible(False)
+        self.please_wait.setVisible(True)
+        self.refresh_gui()
+        self.next_button.setText(_('Next'))
+        return name_input.text().strip()
+
+    def setup_multisig_wallet(self, wallet_folder):
+        """Stack entry for the setup/import multi-sig wallet flow.
+        Called via self.run('setup_multisig_wallet', wallet_folder).
+        Shows the naming dialog then enters choose_multisig."""
+        def on_wallet_named(wallet_name):
+            if not wallet_name:
+                return
+            path = os.path.join(wallet_folder, wallet_name)
+            try:
+                self.storage = WalletStorage(path, manual_upgrades=True)
+            except IOError:
+                return
+            self.wallet_type = 'multisig'
+            self.run('choose_multisig')
+        self.setup_multisig_wallet_name_dialog(run_next=on_wallet_named,
+                                               wallet_folder=wallet_folder)
+
+    @wizard_dialog
+    def setup_multisig_wallet_name_dialog(self, run_next, wallet_folder):
+        create_vbox = QVBoxLayout()
+        create_style = "font-size: 14px;"
+        name_label = QLabel(_('Enter a name for your wallet:'))
+        name_label.setStyleSheet(create_style)
+        create_vbox.addWidget(name_label)
+        name_input = QLineEdit()
+        name_input.setPlaceholderText(_('Wallet name'))
+        name_input.setText(get_new_wallet_name(wallet_folder))
+        name_input.setStyleSheet(create_style)
+        create_vbox.addWidget(name_input)
+        create_vbox.addSpacing(10)
+        msg1 = QLabel(_("Next, you will configure the number of cosigners "
+                         "and required signatures for your multi-signature wallet."))
+        msg1.setWordWrap(True)
+        msg1.setStyleSheet(create_style)
+        create_vbox.addWidget(msg1)
+        create_vbox.addStretch(1)
+        self.create_wallet_button.hide()
+        self.import_seed_button.hide()
+        self.setup_hw_button.hide()
+        self.setup_multisig_button.hide()
+        self.other_options_button.hide()
+        self.next_button.setText(_('Continue'))
+        self.back_button.setText(_('Back'))
+        self.set_layout(create_vbox, title=_('Multi-Signature Wallet'))
+        while True:
+            result = self.loop.exec_()
+            if not result or result == 1:  # close or Back
+                raise UserCancelled
+            break  # result == 2 (Continue)
+        self.title.setVisible(False)
+        self.back_button.setEnabled(False)
+        self.next_button.setEnabled(False)
+        self.main_widget.setVisible(False)
+        self.please_wait.setVisible(True)
+        self.refresh_gui()
+        self.next_button.setText(_('Next'))
+        return name_input.text().strip()
+
+    def other_wallet_options(self, wallet_folder):
+        """Stack entry for the Other Wallet Options flow.
+        Called via self.run('other_wallet_options', wallet_folder).
+        Shows the option selection dialog, then routes accordingly."""
+        def on_option_chosen(option_key):
+            if not option_key:
+                return
+            if option_key == 'open_file':
+                # File browser was handled inside the dialog;
+                # self.storage is already set. Just return.
+                return
+            # Store which flow to enter after naming
+            if option_key == 'xprv':
+                self._pending_wallet_type = 'standard'
+                self._pending_action = 'restore_from_key'
+            elif option_key == 'privkeys':
+                self._pending_wallet_type = 'imported'
+                self._pending_action = 'import_addresses_or_keys'
+            elif option_key == 'xpub':
+                self._pending_wallet_type = 'standard'
+                self._pending_action = 'restore_from_key'
+            elif option_key == 'addresses':
+                self._pending_wallet_type = 'imported'
+                self._pending_action = 'import_addresses_or_keys'
+            def on_wallet_named(wallet_name):
+                if not wallet_name:
+                    return
+                path = os.path.join(wallet_folder, wallet_name)
+                try:
+                    self.storage = WalletStorage(path, manual_upgrades=True)
+                except IOError:
+                    return
+                self.wallet_type = self._pending_wallet_type
+                self.run(self._pending_action)
+            self.other_wallet_name_dialog(run_next=on_wallet_named,
+                                          wallet_folder=wallet_folder)
+            # If we get here, the naming dialog was cancelled (Back) —
+            # re-show the options dialog so the user returns here.
+            if not self.wallet:
+                self.other_wallet_options_dialog(run_next=on_option_chosen,
+                                                    wallet_folder=wallet_folder)
+        self.other_wallet_options_dialog(run_next=on_option_chosen,
+                                            wallet_folder=wallet_folder)
+
+    @wizard_dialog
+    def other_wallet_options_dialog(self, run_next, wallet_folder):
+        """Selection UI: 5 options on the left, description on the right."""
+        options = [
+            ('open_file', _('Open an Electron Cash wallet file'),
+             _("<b>Open an Electron Cash wallet file</b>") + "<br><br>" +
+             _("Open your operating system's file browser and select a wallet "
+               "file previously created by Electron Cash.") + "<br><br>" +
+             _("<b>Note:</b> Electron Cash <b>can not</b> directly import "
+               "wallet files from other software, like wallet.dat files. "
+               "Instead, open those files in the original software and "
+               "export your seed phrase or private keys.")),
+            ('xprv', _('Import master private key,\naka xPriv'),
+             _("<b>Import Master Private Key, aka xPriv</b>") + "<br><br>" +
+             _("After importing a wallet's xPriv (also known as its "
+               "\"extended private key\" or \"master private key\"), "
+               "you will be able to:") + "<br>" +
+             _("\u2022 Monitor all of your wallet's receiving addresses for new transactions") + "<br>" +
+             _("\u2022 Track the balance of all your wallet's addresses") + "<br>" +
+             _("\u2022 Generate new receiving addresses") + "<br>" +
+             _("\u2022 Send Bitcoin Cash from any of those addresses") + "<br><br>" +
+             _("You will <b>not</b> be able to:") + "<br>" +
+             _("\u2022 Export a set of seed words")),
+            ('privkeys', _('Import individual private keys'),
+             _("<b>Import Individual Private Keys</b>") + "<br><br>" +
+             _("After importing individual private keys, you will be able to:") + "<br>" +
+             _("\u2022 Monitor the addresses associated with those private keys for payments") + "<br>" +
+             _("\u2022 Track the balance of those addresses") + "<br>" +
+             _("\u2022 Spend from those addresses") + "<br><br>" +
+             _("You will <b>not</b> be able to:") + "<br>" +
+             _("\u2022 Generate new addresses") + "<br>" +
+             _("\u2022 Monitor other addresses from the original wallet") + "<br>" +
+             _("\u2022 Export seed words or a master private key")),
+            ('xpub', _('Import master public key,\naka xPub (watch-only)'),
+             _("<b>Import Master Public Key, aka xPub (watch-only)</b>") + "<br><br>" +
+             _("A \"watch-only\" wallet will allow you to monitor addresses "
+               "for payments and check their balances, but you will not be "
+               "able to send those funds.") + "<br><br>" +
+             _("By importing a wallet's xPub (also known as its \"master "
+               "public key\" or \"extended public key\"), you can:") + "<br>" +
+             _("\u2022 Monitor all of your wallet's receiving addresses for new transactions") + "<br>" +
+             _("\u2022 Track the balance of all your wallet's addresses") + "<br>" +
+             _("\u2022 Generate new receiving addresses") + "<br><br>" +
+             _("You will <b>not</b> be able to:") + "<br>" +
+             _("\u2022 Send funds from this wallet")),
+            ('addresses', _('Import individual addresses\n(watch-only)'),
+             _("<b>Import Individual Addresses (watch-only)</b>") + "<br><br>" +
+             _("A \"watch-only\" wallet will allow you to monitor addresses "
+               "for payments and check their balances, but you will not be "
+               "able to send those funds.") + "<br><br>" +
+             _("By importing individual addresses, you can:") + "<br>" +
+             _("\u2022 Monitor those addresses for payments") + "<br>" +
+             _("\u2022 Track the balances at those addresses") + "<br><br>" +
+             _("You will <b>not</b> be able to:") + "<br>" +
+             _("\u2022 Generate new addresses") + "<br>" +
+             _("\u2022 Monitor other addresses from the same wallet") + "<br>" +
+             _("\u2022 Send funds from the wallet")),
+        ]
+
+        selected = [None]
+
+        # Styles
+        if ColorScheme.dark_scheme:
+            btn_normal = ("QPushButton { text-align: left; padding: 10px 14px; "
+                          "border: 1px solid #555; border-radius: 6px; "
+                          "background: #3a3a3a; font-size: 14px; }")
+            btn_selected = ("QPushButton { text-align: left; padding: 10px 14px; "
+                            "border: 2px solid #5b9bd5; border-radius: 6px; "
+                            "background: #2a4a6a; font-size: 14px; color: white; }")
+        else:
+            btn_normal = ("QPushButton { text-align: left; padding: 10px 14px; "
+                          "border: 1px solid #ccc; border-radius: 6px; "
+                          "background: white; font-size: 14px; }")
+            btn_selected = ("QPushButton { text-align: left; padding: 10px 14px; "
+                            "border: 2px solid #3a7bd5; border-radius: 6px; "
+                            "background: #dbe8f6; font-size: 14px; color: #1a3a5c; }")
+
+        # Right panel: description
+        desc_label = QLabel('')
+        desc_label.setWordWrap(True)
+        desc_label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        desc_label.setStyleSheet("font-size: 14px; padding: 12px;")
+        desc_label.setTextFormat(Qt.RichText)
+
+        # Left panel: buttons
+        left_vbox = QVBoxLayout()
+        buttons = []
+        for key, label, desc in options:
+            btn = QPushButton(label)
+            btn.setStyleSheet(btn_normal)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+
+            def make_click_handler(k, d, b):
+                def handler():
+                    selected[0] = k
+                    for ob in buttons:
+                        ob.setStyleSheet(btn_normal)
+                    b.setStyleSheet(btn_selected)
+                    desc_label.setText(d)
+                    self.next_button.setEnabled(True)
+                return handler
+
+            btn.clicked.connect(make_click_handler(key, desc, btn))
+            left_vbox.addWidget(btn)
+            buttons.append(btn)
+        left_vbox.addStretch(1)
+
+        # Main layout: left buttons + right description
+        hbox = QHBoxLayout()
+        left_widget = QWidget()
+        left_widget.setLayout(left_vbox)
+        left_widget.setFixedWidth(250)
+        hbox.addWidget(left_widget)
+        hbox.addWidget(desc_label, 1)
+
+        vbox = QVBoxLayout()
+        vbox.addLayout(hbox, 1)
+
+        self.create_wallet_button.hide()
+        self.import_seed_button.hide()
+        self.setup_hw_button.hide()
+        self.setup_multisig_button.hide()
+        self.other_options_button.hide()
+        self.next_button.setText(_('Continue'))
+        self.back_button.setText(_('Back'))
+        self.set_layout(vbox, title=_('Other Wallet Options'), next_enabled=False)
+        while True:
+            result = self.loop.exec_()
+            if not result or result == 1:  # close or Back
+                raise UserCancelled
+            if selected[0] is None:
+                continue  # shouldn't happen since Next is disabled
+            if selected[0] == 'open_file':
+                # Open file browser while the options page stays visible
+                path, __ = QFileDialog.getOpenFileName(
+                    self, _("Select your wallet file"), wallet_folder)
+                if not path:
+                    continue  # cancelled — stay on this page
+                try:
+                    self.storage = WalletStorage(path, manual_upgrades=True)
+                except IOError:
+                    continue
+                break  # success — return to wallet selection
+            break
+        self.next_button.setText(_('Next'))
+        return selected[0]
+
+    @wizard_dialog
+    def other_wallet_name_dialog(self, run_next, wallet_folder):
+        create_vbox = QVBoxLayout()
+        create_style = "font-size: 14px;"
+        name_label = QLabel(_('Enter a name for your wallet:'))
+        name_label.setStyleSheet(create_style)
+        create_vbox.addWidget(name_label)
+        name_input = QLineEdit()
+        name_input.setPlaceholderText(_('Wallet name'))
+        name_input.setText(get_new_wallet_name(wallet_folder))
+        name_input.setStyleSheet(create_style)
+        create_vbox.addWidget(name_input)
+        create_vbox.addSpacing(10)
+        msg1 = QLabel(_("Next, you will be asked to enter your key(s) "
+                         "or address(es)."))
+        msg1.setWordWrap(True)
+        msg1.setStyleSheet(create_style)
+        create_vbox.addWidget(msg1)
+        create_vbox.addStretch(1)
+        self.create_wallet_button.hide()
+        self.import_seed_button.hide()
+        self.setup_hw_button.hide()
+        self.setup_multisig_button.hide()
+        self.other_options_button.hide()
+        self.next_button.setText(_('Continue'))
+        self.back_button.setText(_('Back'))
+        self.set_layout(create_vbox, title=_('Import Wallet'))
         while True:
             result = self.loop.exec_()
             if not result or result == 1:  # close or Back
@@ -622,7 +973,7 @@ class InstallWizard(QDialog, MessageBoxMixin, BaseWizard):
         """Rescue persistent buttons back to the permanent button bar.
         Called before destroying a content layout that may contain them."""
         # Reparent to self so they survive the old layout being destroyed
-        for btn in (self.back_button, self.next_button, self.create_wallet_button, self.import_seed_button, self.setup_hw_button):
+        for btn in (self.back_button, self.next_button, self.create_wallet_button, self.import_seed_button, self.setup_hw_button, self.setup_multisig_button, self.other_options_button):
             btn.setParent(self)
         # Clear old items from button_hbox
         while self.button_hbox.count():
@@ -634,6 +985,8 @@ class InstallWizard(QDialog, MessageBoxMixin, BaseWizard):
         self.button_hbox.addWidget(self.create_wallet_button)
         self.button_hbox.addWidget(self.import_seed_button)
         self.button_hbox.addWidget(self.setup_hw_button)
+        self.button_hbox.addWidget(self.setup_multisig_button)
+        self.button_hbox.addWidget(self.other_options_button)
         self.button_hbox.addStretch(1)
         self.button_hbox.addWidget(self.back_button)
         self.button_hbox.addWidget(self.next_button)
