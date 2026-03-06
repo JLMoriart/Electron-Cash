@@ -126,28 +126,56 @@ class ButtonTabWidget(QWidget):
         self._tabs = []  # list of (widget, icon, text, button_or_None)
         self._current = -1
         self._force_hidden_buttons = set()  # lowercase tab names that must never show a button
-        self._button_bar = QHBoxLayout()
-        self._button_bar.setContentsMargins(0, 0, 0, 0)
-        self._button_bar.addStretch(1)
+
+        # Vertical button bar inside a sidebar widget
+        self._button_bar = QVBoxLayout()
+        self._button_bar.setContentsMargins(4, 4, 4, 4)
+        self._button_bar.setSpacing(2)
+
+        self._sidebar = QWidget()
+        self._sidebar.setFixedWidth(150)
+        self._sidebar.setAutoFillBackground(True)
+        sidebar_layout = QVBoxLayout(self._sidebar)
+        sidebar_layout.setContentsMargins(0, 0, 0, 0)
+        sidebar_layout.addLayout(self._button_bar)
+        sidebar_layout.addStretch(1)
+
         self._content_layout = QVBoxLayout()
         self._content_layout.setContentsMargins(0, 0, 0, 0)
-        layout = QVBoxLayout(self)
+
+        layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
-        layout.addLayout(self._button_bar)
+        layout.addWidget(self._sidebar)
         layout.addLayout(self._content_layout, 1)
 
-    def _style_button(self, btn):
-        """In light mode, flat buttons are invisible against the white
-        background. Give them a subtle darker tint so they stand out.
-        In dark mode, keep flat so qdarkstyle handles styling."""
+    def _style_button(self, btn, active=False):
+        """Style sidebar buttons with full width and active-tab highlight."""
+        btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         if ColorScheme.dark_scheme:
-            btn.setFlat(True)
+            if active:
+                btn.setStyleSheet(
+                    "QPushButton { background-color: rgba(255, 255, 255, 30); border: none;"
+                    " border-radius: 4px; padding: 8px 12px; text-align: left; font-size: 13px; }"
+                )
+            else:
+                btn.setStyleSheet(
+                    "QPushButton { background-color: rgba(255, 255, 255, 10); border: none;"
+                    " border-radius: 4px; padding: 8px 12px; text-align: left; font-size: 13px; }"
+                    " QPushButton:hover { background-color: rgba(255, 255, 255, 20); }"
+                )
         else:
-            btn.setStyleSheet(
-                "QPushButton { background-color: rgba(0, 0, 0, 77); border: none; border-radius: 4px; padding: 4px 8px; }"
-                " QPushButton:hover { background-color: rgba(0, 0, 0, 51); }"
-            )
+            if active:
+                btn.setStyleSheet(
+                    "QPushButton { background-color: rgba(0, 0, 0, 30); border: none;"
+                    " border-radius: 4px; padding: 8px 12px; text-align: left; font-size: 13px; }"
+                )
+            else:
+                btn.setStyleSheet(
+                    "QPushButton { background-color: rgba(0, 0, 0, 8); border: none;"
+                    " border-radius: 4px; padding: 8px 12px; text-align: left; font-size: 13px; }"
+                    " QPushButton:hover { background-color: rgba(0, 0, 0, 20); }"
+                )
 
     def addTab(self, widget, icon_or_text, text=None, hidden_button=False):
         if text is None:
@@ -163,7 +191,7 @@ class ButtonTabWidget(QWidget):
             self._style_button(btn)
             idx = len(self._tabs)
             btn.clicked.connect(lambda checked, i=idx: self.setCurrentIndex(i))
-            self._button_bar.insertWidget(self._button_bar.count() - 1, btn)
+            self._button_bar.addWidget(btn)
         self._content_layout.addWidget(widget)
         widget.hide()
         self._tabs.append((widget, icon_or_text, text, btn))
@@ -212,7 +240,7 @@ class ButtonTabWidget(QWidget):
                 except Exception:
                     pass
                 btn.clicked.connect(lambda checked, i=i: self.setCurrentIndex(i))
-                self._button_bar.insertWidget(self._button_bar.count() - 1, btn)
+                self._button_bar.addWidget(btn)
 
     def indexOf(self, widget):
         for i, (w, icon, text, btn) in enumerate(self._tabs):
@@ -223,9 +251,15 @@ class ButtonTabWidget(QWidget):
     def setCurrentIndex(self, index):
         if 0 <= self._current < len(self._tabs):
             self._tabs[self._current][0].hide()
+            btn = self._tabs[self._current][3]
+            if btn:
+                self._style_button(btn, active=False)
         if 0 <= index < len(self._tabs):
             self._tabs[index][0].show()
             self._current = index
+            btn = self._tabs[index][3]
+            if btn:
+                self._style_button(btn, active=True)
 
     def currentIndex(self):
         return self._current
@@ -446,6 +480,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
             self.showMaximized()
 
         self.init_menubar()
+        self.menuBar().hide()
 
         wrtabs = Weak.ref(tabs)  # We use a weak reference here to help along python gc of QShortcut children: prevent the lambdas below from holding a strong ref to self.
         self._shortcuts.add( QShortcut(QKeySequence("Ctrl+W"), self, self.close) )
@@ -1255,22 +1290,41 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
                     icon = icon_dict["status_lagging_fork"]
                     status_tip = status_tip_dict["status_lagging_fork"] + "; " + text
             else:
-                c, u, x, cash_toks = self.wallet.get_balance(tokens=True)
+                enabled = set(self.config.get('balance_display_items', ['spendable']))
+                need_total = bool(enabled & {'total', 'unconfirmed', 'unmatured', 'cashtokens'})
+                need_spendable = 'spendable' in enabled
 
-                text_items = [
-                    _("Balance: {amount_and_unit}").format(
-                        amount_and_unit=self.format_amount_and_units(c))
-                ]
-                if u:
+                c_all = u_all = x_all = toks_all = 0
+                if need_total or not need_spendable:
+                    c_all, u_all, x_all, toks_all = self.wallet.get_balance(tokens=True)
+                if need_spendable:
+                    c_sp, u_sp, x_sp, toks_sp = self.wallet.get_balance(
+                        exclude_frozen_coins=True, exclude_frozen_addresses=True, tokens=True)
+                    confirmed_only = self.config.get('confirmed_only', False)
+                    spendable_amount = (c_sp - toks_sp) if confirmed_only else (c_sp + u_sp - toks_sp)
+                else:
+                    spendable_amount = 0
+
+                total_amount = c_all + u_all + x_all
+                # For fiat, prefer spendable if shown, otherwise total
+                display_amount = spendable_amount if need_spendable else total_amount
+
+                text_items = []
+                if 'spendable' in enabled:
+                    text_items.append(_("Spendable Balance: {amount_and_unit}").format(
+                        amount_and_unit=self.format_amount_and_units(spendable_amount)))
+                if 'total' in enabled:
+                    text_items.append(_("Total Balance: {amount_and_unit}").format(
+                        amount_and_unit=self.format_amount_and_units(total_amount)))
+                if 'unconfirmed' in enabled and u_all:
                     text_items.append(_("[{amount} unconfirmed]").format(
-                        amount=self.format_amount(u, True).strip()))
-
-                if x:
+                        amount=self.format_amount(u_all, True).strip()))
+                if 'unmatured' in enabled and x_all:
                     text_items.append(_("[{amount} unmatured]").format(
-                        amount=self.format_amount(x, True).strip()))
-                if cash_toks:
+                        amount=self.format_amount(x_all, True).strip()))
+                if 'cashtokens' in enabled and toks_all:
                     text_items.append(_("[{amount} on CashToken UTXOs]").format(
-                        amount=self.format_amount(cash_toks, False).strip()))
+                        amount=self.format_amount(toks_all, False).strip()))
 
                 extra = run_hook("balance_label_extra", self)
                 if isinstance(extra, str) and extra:
@@ -1278,7 +1332,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
 
                 # append fiat balance and price
                 if self.fx.is_enabled():
-                    fiat_text = self.fx.get_fiat_status_text(c + u + x,
+                    fiat_text = self.fx.get_fiat_status_text(display_amount,
                         self.base_unit(), self.get_decimal_point()).strip()
                     if fiat_text:
                         text_items.append(fiat_text)
@@ -1304,6 +1358,61 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         self.status_button.setIcon(icon)
         self.status_button.setStatusTip( status_tip )
         run_hook('window_update_status', self)
+
+    def _show_balance_dialog(self):
+        if not self.wallet:
+            return
+
+        d = QDialog(self)
+        d.setWindowTitle(_("Balance Details"))
+        d.setMinimumWidth(450)
+        vbox = QVBoxLayout(d)
+
+        # Compute all balances
+        c_all, u_all, x_all, toks_all = self.wallet.get_balance(tokens=True)
+        c_sp, u_sp, x_sp, toks_sp = self.wallet.get_balance(
+            exclude_frozen_coins=True, exclude_frozen_addresses=True, tokens=True)
+        confirmed_only = self.config.get('confirmed_only', False)
+        spendable = (c_sp - toks_sp) if confirmed_only else (c_sp + u_sp - toks_sp)
+        total = c_all + u_all + x_all
+
+        items = [
+            ('spendable',   _("Spendable Balance"),   spendable),
+            ('total',       _("Total Balance"),        total),
+            ('unconfirmed', _("Unconfirmed"),           u_all),
+            ('unmatured',   _("Unmatured"),             x_all),
+            ('cashtokens',  _("On CashToken UTXOs"),    toks_all),
+        ]
+
+        enabled = set(self.config.get('balance_display_items', ['spendable']))
+
+        grid = QGridLayout()
+        grid.setColumnStretch(1, 1)
+        checkboxes = {}
+        for i, (key, label, value) in enumerate(items):
+            cb = QCheckBox(label)
+            cb.setChecked(key in enabled)
+            checkboxes[key] = cb
+            grid.addWidget(cb, i, 0)
+            amount_label = QLabel(self.format_amount_and_units(value))
+            amount_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            grid.addWidget(amount_label, i, 1)
+        vbox.addLayout(grid)
+
+        info_label = QLabel(_("Checked items will be shown in the status bar."))
+        info_label.setWordWrap(True)
+        vbox.addWidget(info_label)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        buttons.rejected.connect(d.reject)
+        vbox.addWidget(buttons)
+
+        d.exec_()
+
+        # Save preferences
+        new_enabled = [key for key in [k for k, _, _ in items] if checkboxes[key].isChecked()]
+        self.config.set_key('balance_display_items', new_enabled)
+        self.update_status()
 
     def update_wallet(self):
         self.need_update.set() # will enqueue an _update_wallet() call in at most 0.5 seconds from now.
@@ -5433,7 +5542,24 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         sb.setFixedHeight(35)
         qtVersion = qVersion()
 
-        self.balance_label = QLabel("")
+        self.balance_label = QPushButton("")
+        self.balance_label.setFlat(True)
+        if ColorScheme.dark_scheme:
+            self.balance_label.setStyleSheet(
+                "QPushButton { text-align: left; padding: 2px 6px;"
+                " border: 1px solid #555; border-radius: 3px; background: #3a3a3a; }"
+                "QPushButton:hover { border: 1px solid #5b9bd5; background: #2a4a6a; }"
+                "QPushButton:pressed { border: 1px solid #5b9bd5; background: #1e3a55; }"
+            )
+        else:
+            self.balance_label.setStyleSheet(
+                "QPushButton { text-align: left; padding: 2px 6px;"
+                " border: 1px solid #ccc; border-radius: 3px; background: white; }"
+                "QPushButton:hover { border: 1px solid #3a7bd5; background: #dbe8f6; }"
+                "QPushButton:pressed { border: 1px solid #3a7bd5; background: #c5d9f0; }"
+            )
+        self.balance_label.setCursor(Qt.PointingHandCursor)
+        self.balance_label.clicked.connect(self._show_balance_dialog)
         sb.addWidget(self.balance_label)
 
         self._search_box_spacer = QWidget()
