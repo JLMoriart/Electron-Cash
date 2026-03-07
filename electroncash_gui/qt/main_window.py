@@ -443,7 +443,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         self.tools_tab = self.create_tools_tab()
         self.settings_tab = self.create_settings_tab()
         tabs.addTab(self.home_tab, QIcon(":icons/tab_history.png"), _('Home'))
-        tabs.addTab(self.token_tab, QIcon(":icons/tab_token.svg"), _('CashTokens'))
+        tabs.addTab(self.token_tab, QIcon(":icons/tab_token.svg"), _('Tokens'))
         tabs.addTab(self.wallet_tab, QIcon(":icons/preferences.svg"), _('Wallet'))
         tabs.addTab(self.tools_tab, QIcon(":icons/preferences.svg"), _('Tools'))
         tabs.addTab(self.settings_tab, QIcon(":icons/preferences.svg"), _('Settings'))
@@ -472,7 +472,6 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         add_hidden_tab(tabs, self.utxo_tab, QIcon(":icons/tab_coins.png"), _("Co&ins"), "utxo")
         add_optional_tab(tabs, self.token_history_tab, QIcon(":icons/tab_token.svg"), _("Token History"), "token_history")
         add_hidden_tab(tabs, self.contacts_tab, QIcon(":icons/tab_contacts.png"), _("Con&tacts"), "contacts")
-        add_optional_tab(tabs, self.converter_tab, QIcon(":icons/tab_converter.svg"), _("Address Converter"), "converter")
         add_optional_tab(tabs, self.console_tab, QIcon(":icons/tab_console.png"), _("Con&sole"), "console", False)
 
         tabs.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -996,7 +995,6 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
 
         view_menu = menubar.addMenu(_("&View"))
         add_toggle_action(view_menu, self.token_history_tab)
-        add_toggle_action(view_menu, self.converter_tab)
         add_toggle_action(view_menu, self.console_tab)
 
         tools_menu = menubar.addMenu(_("&Tools"))
@@ -1711,6 +1709,10 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
              _("<b>Flipstarter</b>") + "<br><br>" +
              _("Create or participate in a Flipstarter campaign.")),
 
+            ('address_converter', _('Address Converter'),
+             _("<b>Address Converter</b>") + "<br><br>" +
+             _("Convert between CashAddr and legacy address formats.")),
+
             ('address_book', _('Address Book'),
              _("<b>Address Book</b>") + "<br><br>" +
              _("Manage your contacts.")),
@@ -1859,6 +1861,8 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
                 self.show_message(
                     _("The Flipstarter plugin is not installed or not enabled. "
                       "You can install it from the Plugin Manager."))
+        elif key == 'address_converter':
+            self._show_or_toggle_tab(self.converter_tab)
         elif key == 'address_book':
             self._show_or_toggle_tab(self.contacts_tab)
         elif key == 'encrypt_decrypt':
@@ -4033,18 +4037,36 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         msg = _('Token Name and Token Symbol from BCMR metadata if available, or Token Category '
                 '(Also Known as Token ID)') + '\n\n'\
               + _('To download BCMR metadata, refer to the \'CashTokens\' tab.')
-        token_label = HelpLabel(_('&Token'), msg)
-        grid.addWidget(token_label, 3, 0)
+        self.token_label = HelpLabel(_('&Token'), msg)
         self.token_c = TokenSendComboBox()
         self.token_c.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
-        token_label.setBuddy(self.token_c)
-        grid.addWidget(self.token_c, 3, 1, 1, -1)
+        self.token_label.setBuddy(self.token_c)
 
         self.send_token_util = TokenSendUtil(self.wallet, self.token_meta, self.config)
         self.tokens: DefaultDict[List[Dict]] = defaultdict(list)
         self.tokens_grouped: DefaultDict[DefaultDict[List[Dict]]] = defaultdict(lambda: defaultdict(list))
 
         self.update_sent_token_combobox()
+
+        self.token_amount_e = QLineEdit()
+        token_amount_validator = QDoubleValidator()
+        token_amount_validator.setNotation(QDoubleValidator.StandardNotation)
+        self.token_amount_e.setValidator(token_amount_validator)
+        self.token_amount_e.setFixedWidth(140)
+
+        self.token_max_button = EnterButton(_("&Max Tokens"), self.spend_max_tokens)
+        self.token_max_button.setFixedWidth(140)
+        self.token_max_button.setCheckable(True)
+
+        self.token_amount_max_label = QLabel()
+        self.token_amount_max_label.setBuddy(self.token_amount_e)
+
+        # Initially hide token amount widgets until a token is selected
+        self.token_amount_e.setDisabled(True)
+        self.token_max_button.setDisabled(True)
+        self.token_amount_e.setVisible(False)
+        self.token_max_button.setVisible(False)
+        self.token_amount_max_label.setVisible(False)
 
         def on_token_selection_changed(index):
             if index == 0:
@@ -4053,65 +4075,27 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
                 self.token_max_button.setDisabled(True)
                 self.token_amount_max_label.setText('')
 
-                token_amount_label.setVisible(False)
                 self.token_amount_e.setVisible(False)
                 self.token_max_button.setVisible(False)
                 self.token_amount_max_label.setVisible(False)
 
                 self.update_fee()
-
                 self.is_token_tx = False
             else:
                 self.token_amount_e.clear()
                 self.token_amount_e.setDisabled(False)
                 self.token_max_button.setDisabled(False)
                 max_token_amt = self.token_c.currentData(TokenSendComboBox.DataRoles.max_formated_token_amount_available)
-                self.token_amount_max_label.setText(f"{_('&Maximum Available Tokens')}: {max_token_amt}")
+                self.token_amount_max_label.setText(f"{_('Maximum Available Tokens')}: {max_token_amt}")
 
-                token_amount_label.setVisible(True)
                 self.token_amount_e.setVisible(True)
                 self.token_max_button.setVisible(True)
                 self.token_amount_max_label.setVisible(True)
 
                 self.update_fee()
-
                 self.is_token_tx = True
 
         self.token_c.currentIndexChanged.connect(on_token_selection_changed)
-
-        self.token_amount_e = QLineEdit()
-        token_amount_validator = QDoubleValidator()
-        token_amount_validator.setNotation(QDoubleValidator.StandardNotation)
-        self.token_amount_e.setValidator(token_amount_validator)
-        self.token_amount_e.setFixedWidth(140)
-        msg = _('Token amount to be sent.') + '\n\n' \
-              + _('The amount will be displayed in red if you do not have enough funds in your wallet.') + ' ' \
-              + _('Note that if you have frozen some of your addresses, the available funds will be lower than your '
-                  'total balance.')
-
-        token_amount_label = HelpLabel(_('&Token Amount'), msg)
-        token_amount_label.setBuddy(self.token_amount_e)
-        grid.addWidget(token_amount_label, 4, 0)
-        grid.addWidget(self.token_amount_e, 4, 1)
-
-        self.token_max_button = EnterButton(_("&Max Tokens"), self.spend_max_tokens)
-        self.token_max_button.setFixedWidth(140)
-        self.token_max_button.setCheckable(True)
-        grid.addWidget(self.token_max_button, 4, 2)
-
-        self.token_amount_max_label = QLabel()
-        # self.token_amount_max_label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
-        self.token_amount_max_label.setBuddy(self.token_amount_e)
-        grid.addWidget(self.token_amount_max_label, 4, 3, 1, -1)
-
-        self.token_amount_e.setDisabled(True)
-        self.token_max_button.setDisabled(True)
-
-        # Don't show token related fields when no token is selected.
-        token_amount_label.setVisible(False)
-        self.token_amount_e.setVisible(False)
-        self.token_max_button.setVisible(False)
-        self.token_amount_max_label.setVisible(False)
 
         msg_opreturn = ( _('OP_RETURN data (optional).') + '\n\n'
                         + _('Posts a PERMANENT note to the BCH blockchain as part of this transaction.')
@@ -4120,7 +4104,6 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         self.message_opreturn_e = MyLineEdit()
         self.opreturn_label.setBuddy(self.message_opreturn_e)
         self.opreturn_rawhex_cb = QCheckBox()
-        self.opreturn_rawhex_cb.setToolTip(_('If unchecked, the textbox contents are UTF8-encoded into a single-push script: <tt>OP_RETURN PUSH &lt;text&gt;</tt>. If checked, the text contents will be interpreted as a raw hexadecimal script to be appended after the OP_RETURN opcode: <tt>OP_RETURN &lt;script&gt;</tt>.'))
         rawhex_help_text = (_('Raw hex script') + '\n\n'
             + _('Check this box if the text you\'ve entered in the "OP_RETURN" field is the raw hexadecimal script to be appended to the OP_RETURN opcode.') + '\n'
             + _('>> (OP_RETURN <script>)') + '\n\n'
@@ -4204,21 +4187,28 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         row2 = make_row_frame([amount_label, self.amount_e, self.bidi_icon, self.fiat_send_e, self.max_button, 1])
         grid.addWidget(row2, 2, 0, 1, -1)
 
-        # Row 3: Description
-        description_label.setFixedWidth(label_width)
-        row3 = make_row_frame([description_label, (self.message_e, 1)])
+        # Row 3: Token (combobox + amount on same row)
+        self.token_label.setFixedWidth(label_width)
+        row3 = make_row_frame([self.token_label, self.token_c,
+                               self.token_amount_e, self.token_max_button,
+                               self.token_amount_max_label, 1])
         grid.addWidget(row3, 3, 0, 1, -1)
 
-        # Row 4: OP_RETURN
-        self.opreturn_label.setFixedWidth(label_width)
-        row4 = make_row_frame([self.opreturn_label, (self.message_opreturn_e, 1), self.opreturn_rawhex_container])
-        self.send_tab_opreturn_widgets.append(row4)  # so visibility toggling hides the whole row
+        # Row 4: Description
+        description_label.setFixedWidth(label_width)
+        row4 = make_row_frame([description_label, (self.message_e, 1)])
         grid.addWidget(row4, 4, 0, 1, -1)
 
-        # Track alternating row frames for dynamic tinting
-        self.send_tab_row_frames = [row1, row2, row3, row4]
+        # Row 5: OP_RETURN
+        self.opreturn_label.setFixedWidth(label_width)
+        row5 = make_row_frame([self.opreturn_label, (self.message_opreturn_e, 1), self.opreturn_rawhex_container])
+        self.send_tab_opreturn_widgets.append(row5)  # so visibility toggling hides the whole row
+        grid.addWidget(row5, 5, 0, 1, -1)
 
-        # Row 5: Fee (no tint)
+        # Track alternating row frames for dynamic tinting
+        self.send_tab_row_frames = [row1, row2, row3, row4, row5]
+
+        # Row 6: Fee
         self.fee_e_label.setFixedWidth(label_width)
 
         def fee_cb(dyn, pos, fee_rate):
@@ -4249,9 +4239,9 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         self.fee_e.editingFinished.connect(self.update_fee)
         self.connect_fields(self, self.amount_e, self.fiat_send_e, self.fee_e)
 
-        row5 = make_row_frame([self.fee_e_label, self.fee_slider, self.fee_custom_lbl, self.fee_e, 1])
-        grid.addWidget(row5, 5, 0, 1, -1)
-        self.send_tab_row_frames.append(row5)
+        row6 = make_row_frame([self.fee_e_label, self.fee_slider, self.fee_custom_lbl, self.fee_e, 1])
+        grid.addWidget(row6, 6, 0, 1, -1)
+        self.send_tab_row_frames.append(row6)
 
         self.update_send_tab_row_tints()
 
@@ -4279,12 +4269,12 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         btn_grid.addWidget(self.preview_button, 1, 0)
         btn_grid.addWidget(self.send_button, 0, 1, 2, 1)
         btn_grid.addLayout(self.send_tab_extra_plugin_controls_hbox, 0, 2, 2, 1, Qt.AlignVCenter)
-        grid.addWidget(btn_container, 6, 0, 2, -1, Qt.AlignLeft)
+        grid.addWidget(btn_container, 7, 0, 2, -1, Qt.AlignLeft)
 
-        # Row 8: From (never tinted — separated from form rows by buttons)
+        # Row 9: From (never tinted — separated from form rows by buttons)
         self.from_label.setFixedWidth(label_width)
         self.from_row = make_row_frame([self.from_label, (self.from_list, 1)])
-        grid.addWidget(self.from_row, 8, 0, 1, -1)
+        grid.addWidget(self.from_row, 9, 0, 1, -1)
 
         self.payto_e.textChanged.connect(self.update_buttons_on_seed)  # hide/unhide various buttons
 
